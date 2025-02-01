@@ -69,72 +69,67 @@ add_action( 'sumai_daily_event', 'sumai_generate_daily_summary' );
  * Fetches the latest articles from configured feeds, summarizes them, and publishes a post.
  * @return void
  */
-function sumai_generate_daily_summary() {
+function sumai_generate_daily_summary($force_fetch = false) {
     try {
+        error_log('[SUMAI] Starting daily summary generation process.');
+        
         // Load settings
         $options = get_option('sumai_settings', array());
         $feed_urls = isset($options['feed_urls']) ? $options['feed_urls'] : '';
         $context_prompt = isset($options['context_prompt']) ? $options['context_prompt'] : '';
-        $draft_mode = isset($options['draft_mode']) ? $options['draft_mode'] : true;
+        // Force draft mode for manual summary generation
+        $draft_mode = true;
 
-        // Track cron execution
-        sumai_track_cron_execution();
+        error_log('[SUMAI] Settings loaded - Feed URLs: ' . (empty($feed_urls) ? 'None' : 'Present') . 
+                 ', Context Prompt: ' . (empty($context_prompt) ? 'None' : 'Present'));
 
         // Validate requirements
         if (empty($feed_urls)) {
-            error_log("[SUMAI] No feed URLs configured");
-            return;
+            error_log("[SUMAI] Error: No feed URLs configured");
+            return false;
         }
 
         // Get the content
-        $content = sumai_fetch_latest_articles($feed_urls);
+        error_log('[SUMAI] Fetching articles from feeds...');
+        $content = sumai_fetch_latest_articles($feed_urls, $force_fetch);
         if (empty($content)) {
-            error_log("[SUMAI] No new content to process");
-            sumai_track_post_creation(0, false);
-            return;
+            error_log("[SUMAI] Error: No new content to process");
+            return false;
         }
+        error_log('[SUMAI] Content fetched successfully. Length: ' . strlen($content) . ' characters');
 
         // Get the summary
+        error_log('[SUMAI] Generating summary using OpenAI...');
         $summary = sumai_summarize_text($content, $context_prompt);
         if (empty($summary)) {
-            error_log("[SUMAI] Failed to generate summary");
-            sumai_track_post_creation(0, false);
-            return;
+            error_log("[SUMAI] Error: Failed to generate summary");
+            return false;
         }
+        error_log('[SUMAI] Summary generated successfully');
 
         // Create the post
         $post_data = array(
             'post_title'    => $summary['title'],
             'post_content'  => $summary['content'],
-            'post_status'   => $draft_mode ? 'draft' : 'publish',
+            'post_status'   => 'draft', // Always draft for manual generation
             'post_type'     => 'post',
-            'post_author'   => 1
+            'post_author'   => get_current_user_id() // Use current user instead of hardcoded ID
         );
 
-        // Insert the post
+        error_log('[SUMAI] Creating new post...');
         $post_id = wp_insert_post($post_data, true);
 
         if (is_wp_error($post_id)) {
-            error_log("[SUMAI] Failed to create post: " . $post_id->get_error_message());
-            sumai_track_post_creation(0, false);
-            return;
+            error_log("[SUMAI] Error creating post: " . $post_id->get_error_message());
+            return false;
         }
 
-        // Track successful post creation
-        sumai_track_post_creation($post_id, true);
-        
-        // Update feed processing history with post status
-        $processed_items = get_option('sumai_processed_items', array());
-        foreach ($processed_items as $feed_url => &$item) {
-            $item['post_status'] = $draft_mode ? 'draft' : 'publish';
-        }
-        update_option('sumai_processed_items', $processed_items);
-
+        error_log("[SUMAI] Post created successfully. ID: " . $post_id);
         return $post_id;
+
     } catch (Exception $e) {
         error_log("[SUMAI] Exception in daily summary generation: " . $e->getMessage());
-        sumai_track_post_creation(0, false);
-        return null;
+        return false;
     }
 }
 
@@ -146,9 +141,10 @@ function sumai_generate_daily_summary() {
  * Fetches the latest article from each feed and concatenates them into one string.
  *
  * @param string $feed_urls String of feed URLs separated by newlines.
+ * @param bool $force_fetch Force fetch new content, ignoring the "already processed" check.
  * @return string Combined textual content from the latest articles. Empty if none found.
  */
-function sumai_fetch_latest_articles($feed_urls = '') {
+function sumai_fetch_latest_articles($feed_urls = '', $force_fetch = false) {
     $combined_text = '';
 
     if (empty($feed_urls)) {
@@ -181,33 +177,34 @@ function sumai_fetch_latest_articles($feed_urls = '') {
                 $item_url = $latest_item->get_permalink();
                 $item_date = $latest_item->get_date('U');
 
-                // Check if we've already processed this item
-                if (!isset($processed_items[$feed_url]) || 
-                    $processed_items[$feed_url]['id'] !== $item_id ||
-                    $processed_items[$feed_url]['date'] < $item_date) {
-                    
-                    // Get the content
-                    $title = $latest_item->get_title();
-                    $content = $latest_item->get_content();
-                    $description = $latest_item->get_description();
-                    
-                    // Use content if available, otherwise use description
-                    $text = !empty($content) ? $content : $description;
-                    
-                    // Add title and content to combined text
-                    $combined_text .= "Article Title: $title\n\n";
-                    $combined_text .= wp_strip_all_tags($text) . "\n\n";
-                    
-                    // Update processed items
+                // Skip already processed items unless force_fetch is true
+                if (!$force_fetch && isset($processed_items[$feed_url]) && 
+                    $processed_items[$feed_url]['id'] === $item_id &&
+                    $processed_items[$feed_url]['date'] >= $item_date) {
+                    error_log("[SUMAI] Skipping already processed item from feed: $feed_url");
+                    continue;
+                }
+                
+                // Get the content
+                $title = $latest_item->get_title();
+                $content = $latest_item->get_content();
+                $description = $latest_item->get_description();
+                
+                // Use content if available, otherwise use description
+                $text = !empty($content) ? $content : $description;
+                
+                // Add title and content to combined text
+                $combined_text .= "Article Title: $title\n\n";
+                $combined_text .= wp_strip_all_tags($text) . "\n\n";
+                
+                // Update processed items only if not forcing fetch
+                if (!$force_fetch) {
                     $processed_items[$feed_url] = array(
                         'id' => $item_id,
                         'url' => $item_url,
                         'date' => $item_date,
                         'title' => $title
                     );
-                } else {
-                    error_log("[SUMAI] Skipping already processed item from feed: $feed_url");
-                    continue;
                 }
             }
         } catch (Exception $e) {
@@ -216,8 +213,10 @@ function sumai_fetch_latest_articles($feed_urls = '') {
         }
     }
 
-    // Save the updated processed items
-    update_option('sumai_processed_items', $processed_items);
+    // Update processed items in database only if not forcing fetch
+    if (!$force_fetch && !empty($processed_items)) {
+        update_option('sumai_processed_items', $processed_items);
+    }
 
     return $combined_text;
 }
@@ -237,7 +236,7 @@ function sumai_fetch_latest_articles($feed_urls = '') {
 function sumai_summarize_text( $text, $context_prompt ) {
     $api_key = sumai_get_api_key();
     if (empty($api_key)) {
-        error_log('Sumai: OpenAI API key not found in .env file');
+        error_log('Sumai: OpenAI API key not found in plugin settings or .env file');
         return '';
     }
 
@@ -322,23 +321,30 @@ function sumai_summarize_text( $text, $context_prompt ) {
 function sumai_get_api_key() {
     static $api_key = null;
     if ($api_key === null) {
-        // Get home directory path
-        $home_dir = dirname(dirname(ABSPATH)); // /home/tzjwuepq
-        $env_path = $home_dir . '/.env';
-        
-        if (file_exists($env_path)) {
-            $env_content = file_get_contents($env_path);
-            foreach (explode("\n", $env_content) as $line) {
-                $line = trim($line);
-                if (strpos($line, 'OPENAI_API_KEY=') === 0) {
-                    $api_key = trim(substr($line, strlen('OPENAI_API_KEY=')));
-                    break;
-                }
-            }
+        // First, try to get the API key from the plugin settings (for the website configuration)
+        $options = get_option('sumai_settings', array());
+        if (isset($options['openai_api_key']) && !empty($options['openai_api_key'])) {
+            $api_key = trim($options['openai_api_key']);
         }
         
-        if ($api_key === null) {
-            error_log('Sumai: OpenAI API key not found in ' . $env_path);
+        // Fallback: Get home directory path and read the .env file
+        if ($api_key === null || empty($api_key)) {
+            $home_dir = dirname(dirname(ABSPATH));
+            $env_path = $home_dir . '/.env';
+            if (file_exists($env_path)) {
+                $env_content = file_get_contents($env_path);
+                foreach (explode("\n", $env_content) as $line) {
+                    $line = trim($line);
+                    if (strpos($line, 'OPENAI_API_KEY=') === 0) {
+                        $api_key = trim(substr($line, strlen('OPENAI_API_KEY=')));
+                        break;
+                    }
+                }
+            }
+            
+            if ($api_key === null || empty($api_key)) {
+                error_log('Sumai: OpenAI API key not found in plugin settings or ' . $env_path);
+            }
         }
     }
     return $api_key;
@@ -359,7 +365,7 @@ function sumai_add_admin_menu() {
         'sumai-settings', // Menu slug
         'sumai_render_settings_page', // Function to render the page
         'dashicons-rss', // Icon (using WordPress RSS dashicon)
-        30 // Position in menu
+        100 // Menu position (numeric value)
     );
 }
 add_action('admin_menu', 'sumai_add_admin_menu');
@@ -402,6 +408,11 @@ function sumai_sanitize_settings($input) {
 
     // Handle draft mode checkbox
     $sanitized['draft_mode'] = isset($input['draft_mode']) ? true : false;
+
+    // Sanitize OpenAI API key
+    if (isset($input['openai_api_key'])) {
+        $sanitized['openai_api_key'] = sanitize_text_field($input['openai_api_key']);
+    }
 
     return $sanitized;
 }
@@ -715,16 +726,17 @@ function sumai_render_settings_page() {
         }
         // Handle manual generation
         elseif (isset($_POST['sumai_generate_now']) && check_admin_referer('sumai_generate_now')) {
-            sumai_generate_daily_summary();
+            sumai_generate_daily_summary(true);
             echo '<div class="notice notice-success is-dismissible"><p>Summary post has been generated. Check the Posts section to find it.</p></div>';
         }
     }
 
     // Get settings
     $options = get_option('sumai_settings', array());
-    $feed_urls = isset($options['feed_urls']) ? array_filter(explode("\n", $options['feed_urls'])) : array();
+    $feed_urls = isset($options['feed_urls']) ? $options['feed_urls'] : '';
     $context_prompt = isset($options['context_prompt']) ? $options['context_prompt'] : '';
     $draft_mode = isset($options['draft_mode']) ? $options['draft_mode'] : true;
+    $openai_api_key = isset($options['openai_api_key']) ? $options['openai_api_key'] : '';
     
     $debug_messages[] = "Retrieved settings from database:\n" . print_r($options, true);
     
@@ -732,6 +744,7 @@ function sumai_render_settings_page() {
     $feed_urls = isset($options['feed_urls']) ? array_filter(explode("\n", $options['feed_urls'])) : array();
     $context_prompt = isset($options['context_prompt']) ? $options['context_prompt'] : '';
     $draft_mode = isset($options['draft_mode']) ? $options['draft_mode'] : true;
+    $openai_api_key = isset($options['openai_api_key']) ? $options['openai_api_key'] : '';
     
     $debug_messages[] = "Feed URLs for display (" . count($feed_urls) . "):\n" . print_r($feed_urls, true);
     ?>
@@ -764,6 +777,13 @@ function sumai_render_settings_page() {
                     </td>
                 </tr>
                 <tr>
+                    <th scope="row">OpenAI API Key</th>
+                    <td>
+                        <input type="text" name="sumai_settings[openai_api_key]" value="<?php echo esc_attr($openai_api_key); ?>" class="large-text" placeholder="Enter your OpenAI API key">
+                        <p class="description">Your OpenAI API key for connecting to the OpenAI API.</p>
+                    </td>
+                </tr>
+                <tr>
                     <th scope="row">Draft Mode</th>
                     <td>
                         <label>
@@ -780,7 +800,8 @@ function sumai_render_settings_page() {
         <div class="card" style="max-width: 800px; margin-top: 20px; padding: 10px;">
             <h2>Test RSS Feeds</h2>
             <p>Click the button below to test the RSS feeds and check for new content.</p>
-            <button class="button button-secondary sumai-test-feeds">Test RSS Feeds</button>
+            <input type="button" id="test-feeds-button" class="button button-secondary" value="Test RSS Feeds">
+            <input type="button" id="test-api-button" class="button button-secondary" value="Test API Key" style="margin-left: 10px;">
             <div id="sumai-test-results" style="margin-top: 10px;"></div>
         </div>
 
@@ -950,21 +971,33 @@ add_action('admin_footer', function() {
     ?>
     <script type="text/javascript">
     jQuery(document).ready(function($) {
-        $('.sumai-test-feeds').click(function(e) {
+        // RSS Feed Test
+        $('#test-feeds-button').on('click', function(e) {
             e.preventDefault();
-            var $button = $(this);
-            var $results = $('#sumai-test-results');
-            
-            $button.prop('disabled', true);
-            $button.text('Testing...');
+            var button = $(this);
+            var originalText = button.val();
+            button.prop('disabled', true).val('Testing...');
             
             $.post(ajaxurl, {
-                action: 'sumai_test_feeds',
-                nonce: '<?php echo wp_create_nonce('sumai_test_feeds'); ?>'
+                action: 'sumai_test_feeds'
             }, function(response) {
-                $results.html('<pre>' + response + '</pre>');
-                $button.prop('disabled', false);
-                $button.text('Test RSS Feeds');
+                alert(response);
+                button.prop('disabled', false).val(originalText);
+            });
+        });
+
+        // API Key Test
+        $('#test-api-button').on('click', function(e) {
+            e.preventDefault();
+            var button = $(this);
+            var originalText = button.val();
+            button.prop('disabled', true).val('Testing...');
+            
+            $.post(ajaxurl, {
+                action: 'sumai_test_api'
+            }, function(response) {
+                alert(response);
+                button.prop('disabled', false).val(originalText);
             });
         });
     });
@@ -1012,3 +1045,79 @@ function sumai_track_cron_execution() {
     
     update_option('sumai_last_cron_run', $current_time);
 }
+
+/* --- Test Function for API Key Retrieval --- */
+function sumai_test_api_key() {
+    $api_key = sumai_get_api_key();
+    if (empty($api_key)) {
+         error_log('[SUMAI] API key not found.');
+    } else {
+         error_log('[SUMAI] API key retrieved: ' . substr($api_key, 0, 4) . '...');
+    }
+    return $api_key;
+}
+
+// Add API test AJAX handler
+add_action('wp_ajax_sumai_test_api', function() {
+    $api_key = sumai_get_api_key();
+    if (empty($api_key)) {
+        wp_send_json('OpenAI API key not found. Please check your settings or .env file.');
+    } else {
+        $first_chars = substr($api_key, 0, 4);
+        wp_send_json("OpenAI API key found (starts with: {$first_chars}...)");
+    }
+});
+
+// Handle the manual generation button submission
+add_action('admin_post_sumai_generate_now', function() {
+    if (!current_user_can('manage_options')) {
+        wp_die('Unauthorized');
+    }
+
+    check_admin_referer('sumai_generate_now');
+    
+    $result = sumai_generate_daily_summary(true);
+    
+    if ($result) {
+        $redirect_url = add_query_arg(
+            array(
+                'page' => 'sumai-settings',
+                'message' => 'summary_generated',
+                'post_id' => $result
+            ),
+            admin_url('admin.php')
+        );
+    } else {
+        $redirect_url = add_query_arg(
+            array(
+                'page' => 'sumai-settings',
+                'error' => 'generation_failed'
+            ),
+            admin_url('admin.php')
+        );
+    }
+    
+    wp_redirect($redirect_url);
+    exit;
+});
+
+// Add admin notice handler
+add_action('admin_notices', function() {
+    if (!isset($_GET['page']) || $_GET['page'] !== 'sumai-settings') {
+        return;
+    }
+
+    if (isset($_GET['message']) && $_GET['message'] === 'summary_generated') {
+        $post_id = isset($_GET['post_id']) ? intval($_GET['post_id']) : 0;
+        $edit_link = $post_id ? get_edit_post_link($post_id) : '';
+        $message = 'Summary post has been generated. ';
+        if ($edit_link) {
+            $message .= sprintf('<a href="%s">View/Edit Post</a>', esc_url($edit_link));
+        }
+        echo '<div class="notice notice-success is-dismissible"><p>' . $message . '</p></div>';
+    }
+
+    if (isset($_GET['error']) && $_GET['error'] === 'generation_failed') {
+        echo '<div class="notice notice-error is-dismissible"><p>Failed to generate summary. Check error logs for details.</p></div>';
+    }
+});
