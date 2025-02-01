@@ -70,67 +70,70 @@ add_action( 'sumai_daily_event', 'sumai_generate_daily_summary' );
  * @return void
  */
 function sumai_generate_daily_summary($force_fetch = false) {
-    try {
-        error_log('[SUMAI] Starting daily summary generation process.');
-        
-        // Load settings
-        $options = get_option('sumai_settings', array());
-        $feed_urls = isset($options['feed_urls']) ? $options['feed_urls'] : '';
-        $context_prompt = isset($options['context_prompt']) ? $options['context_prompt'] : '';
-        // Force draft mode for manual summary generation
-        $draft_mode = true;
+    error_log('[SUMAI] Starting daily summary generation...');
 
-        error_log('[SUMAI] Settings loaded - Feed URLs: ' . (empty($feed_urls) ? 'None' : 'Present') . 
-                 ', Context Prompt: ' . (empty($context_prompt) ? 'None' : 'Present'));
+    // Get settings
+    $options = get_option('sumai_settings', array());
+    $feed_urls = isset($options['feed_urls']) ? $options['feed_urls'] : '';
+    $context_prompt = isset($options['context_prompt']) ? $options['context_prompt'] : '';
+    $title_prompt = isset($options['title_prompt']) ? $options['title_prompt'] : '';
+    // Force draft mode for manual summary generation
+    $draft_mode = true;
 
-        // Validate requirements
-        if (empty($feed_urls)) {
-            error_log("[SUMAI] Error: No feed URLs configured");
-            return false;
-        }
-
-        // Get the content
-        error_log('[SUMAI] Fetching articles from feeds...');
-        $content = sumai_fetch_latest_articles($feed_urls, $force_fetch);
-        if (empty($content)) {
-            error_log("[SUMAI] Error: No new content to process");
-            return false;
-        }
-        error_log('[SUMAI] Content fetched successfully. Length: ' . strlen($content) . ' characters');
-
-        // Get the summary
-        error_log('[SUMAI] Generating summary using OpenAI...');
-        $summary = sumai_summarize_text($content, $context_prompt);
-        if (empty($summary)) {
-            error_log("[SUMAI] Error: Failed to generate summary");
-            return false;
-        }
-        error_log('[SUMAI] Summary generated successfully');
-
-        // Create the post
-        $post_data = array(
-            'post_title'    => $summary['title'],
-            'post_content'  => $summary['content'],
-            'post_status'   => 'draft', // Always draft for manual generation
-            'post_type'     => 'post',
-            'post_author'   => get_current_user_id() // Use current user instead of hardcoded ID
-        );
-
-        error_log('[SUMAI] Creating new post...');
-        $post_id = wp_insert_post($post_data, true);
-
-        if (is_wp_error($post_id)) {
-            error_log("[SUMAI] Error creating post: " . $post_id->get_error_message());
-            return false;
-        }
-
-        error_log("[SUMAI] Post created successfully. ID: " . $post_id);
-        return $post_id;
-
-    } catch (Exception $e) {
-        error_log("[SUMAI] Exception in daily summary generation: " . $e->getMessage());
+    // Basic validation
+    if (empty($feed_urls)) {
+        error_log("[SUMAI] Error: No feed URLs configured");
         return false;
     }
+
+    // Get feed URLs as array and filter out empty lines
+    $feed_urls = array_filter(explode("\n", $feed_urls));
+
+    // Fetch and combine content from all feeds
+    error_log('[SUMAI] Fetching content from feeds...');
+    $content = '';
+    foreach ($feed_urls as $url) {
+        $url = trim($url);
+        if (!empty($url)) {
+            $feed_content = sumai_fetch_feed_content($url, $force_fetch);
+            $content .= $feed_content . "\n\n";
+        }
+    }
+
+    if (empty($content)) {
+        error_log("[SUMAI] Error: No content fetched from feeds");
+        return false;
+    }
+
+    // Get the summary
+    error_log('[SUMAI] Generating summary using OpenAI...');
+    $result = sumai_summarize_text($content, $context_prompt, $title_prompt);
+    
+    // Validate the result
+    if (!is_array($result) || empty($result['content'])) {
+        error_log("[SUMAI] Error: Failed to generate summary - invalid result format");
+        return false;
+    }
+
+    // Create the post
+    error_log('[SUMAI] Creating WordPress post...');
+    $post_data = array(
+        'post_title'    => $result['title'],
+        'post_content'  => $result['content'],
+        'post_status'   => $draft_mode ? 'draft' : 'publish',
+        'post_type'     => 'post',
+        'post_author'   => get_current_user_id(),
+    );
+
+    $post_id = wp_insert_post($post_data);
+
+    if (!$post_id || is_wp_error($post_id)) {
+        error_log("[SUMAI] Error: Failed to create post");
+        return false;
+    }
+
+    error_log('[SUMAI] Summary post created successfully');
+    return $post_id;
 }
 
 /* -------------------------------------------------------------------------
@@ -231,91 +234,142 @@ function sumai_fetch_latest_articles($feed_urls = '', $force_fetch = false) {
  *
  * @param string $text           The full text to summarize.
  * @param string $context_prompt A custom prompt to shape the AI summary output.
- * @return string Summarized text or empty string if there was an error.
+ * @param string $title_prompt   A custom prompt for generating the post title.
+ * @return array Array containing 'title' and 'content' keys
  */
-function sumai_summarize_text( $text, $context_prompt ) {
+function sumai_summarize_text($text, $context_prompt, $title_prompt = '') {
     $api_key = sumai_get_api_key();
     if (empty($api_key)) {
         error_log('Sumai: OpenAI API key not found in plugin settings or .env file');
-        return '';
+        return array(
+            'title' => 'Daily Summary for ' . current_time('Y-m-d'),
+            'content' => ''
+        );
     }
 
     // Basic input validation
-    if ( empty( $text ) ) {
-        return '';
+    if (empty($text)) {
+        return array(
+            'title' => 'Daily Summary for ' . current_time('Y-m-d'),
+            'content' => ''
+        );
     }
 
     // A quick limit to ~1600 words in the input (very rough approach)
-    $word_limit    = 1600;
-    $words         = explode( ' ', $text );
-    if ( count( $words ) > $word_limit ) {
-        $words = array_slice( $words, 0, $word_limit );
+    $word_limit = 1600;
+    $words = explode(' ', $text);
+    if (count($words) > $word_limit) {
+        $words = array_slice($words, 0, $word_limit);
     }
-    $truncated_text = implode( ' ', $words );
+    $truncated_text = implode(' ', $words);
 
     // Build the request body (fictional endpoint for "gpt-4o-mini")
-    // Adjust as needed for your actual OpenAI / ChatGPT request if the endpoint differs
     $api_endpoint = 'https://api.openai.com/v1/chat/completions';
 
-    // We will create a "system" style context by prepending the context prompt.
-    // Alternatively, you can do a user + system approach, but here we keep it simple:
-    $prompt_text = $context_prompt . "\n\n" . $truncated_text;
-
-    $request_body = array(
-        'model'       => 'gpt-4o-mini', // per instructions
-        'messages'    => array(
-            array( 'role' => 'user', 'content' => $prompt_text ),
+    // First, generate the summary
+    $summary_request_body = array(
+        'model' => 'gpt-4o-mini',
+        'messages' => array(
+            array('role' => 'user', 'content' => $context_prompt . "\n\n" . $truncated_text),
         ),
-        'max_tokens'  => 800,
+        'max_tokens' => 800,
         'temperature' => 0.7,
     );
 
     $request_args = array(
         'headers' => array(
-            'Content-Type'  => 'application/json',
+            'Content-Type' => 'application/json',
             'Authorization' => 'Bearer ' . $api_key,
         ),
-        'body'    => json_encode( $request_body ),
-        'method'  => 'POST',
+        'body' => json_encode($summary_request_body),
+        'method' => 'POST',
         'timeout' => 30,
     );
 
-    // Send request to OpenAI
-    $response = wp_remote_post( $api_endpoint, $request_args );
-
-    if ( is_wp_error( $response ) ) {
-        sumai_log_event( 'OpenAI API request failed: ' . $response->get_error_message() );
-        return '';
+    // Send request to OpenAI for summary
+    $response = wp_remote_post($api_endpoint, $request_args);
+    
+    if (is_wp_error($response)) {
+        error_log('Sumai: Summary generation failed - ' . $response->get_error_message());
+        return array(
+            'title' => 'Daily Summary for ' . current_time('Y-m-d'),
+            'content' => ''
+        );
     }
 
-    $status_code = wp_remote_retrieve_response_code( $response );
-    if ( $status_code != 200 ) {
-        sumai_log_event( 'OpenAI API returned non-200 status: ' . $status_code );
-        return '';
+    $status_code = wp_remote_retrieve_response_code($response);
+    if ($status_code !== 200) {
+        error_log('Sumai: Summary generation failed - HTTP ' . $status_code);
+        return array(
+            'title' => 'Daily Summary for ' . current_time('Y-m-d'),
+            'content' => ''
+        );
     }
 
-    $response_body = wp_remote_retrieve_body( $response );
-    if ( empty( $response_body ) ) {
-        sumai_log_event( 'OpenAI API response was empty.' );
-        return '';
+    $response_body = wp_remote_retrieve_body($response);
+    $data = json_decode($response_body, true);
+    
+    if (!isset($data['choices'][0]['message']['content'])) {
+        error_log('Sumai: Summary generation failed - Invalid API response');
+        return array(
+            'title' => 'Daily Summary for ' . current_time('Y-m-d'),
+            'content' => ''
+        );
     }
 
-    $data = json_decode( $response_body, true );
-    if ( ! isset( $data['choices'][0]['message']['content'] ) ) {
-        sumai_log_event( 'OpenAI API response did not contain expected fields.' );
-        return '';
+    $summary = trim($data['choices'][0]['message']['content']);
+
+    // Truncate summary if needed
+    $summary_words = explode(' ', $summary);
+    if (count($summary_words) > $word_limit) {
+        $summary_words = array_slice($summary_words, 0, $word_limit);
+        $summary = implode(' ', $summary_words);
     }
 
-    $summary = trim( $data['choices'][0]['message']['content'] );
-
-    // Additional truncation just to ensure we stay within ~1600 words
-    $summary_words = explode( ' ', $summary );
-    if ( count( $summary_words ) > $word_limit ) {
-        $summary_words = array_slice( $summary_words, 0, $word_limit );
+    // If no title prompt provided, use default title
+    if (empty($title_prompt)) {
+        return array(
+            'title' => 'Daily Summary for ' . current_time('Y-m-d'),
+            'content' => $summary
+        );
     }
-    $final_summary = implode( ' ', $summary_words );
 
-    return array('title' => 'Daily Summary for ' . current_time( 'Y-m-d' ), 'content' => $final_summary);
+    // Generate title using the provided prompt
+    $title_request_body = array(
+        'model' => 'gpt-4o-mini',
+        'messages' => array(
+            array('role' => 'user', 'content' => $title_prompt . "\n\nArticle Summary:\n" . $summary),
+        ),
+        'max_tokens' => 100,
+        'temperature' => 0.7,
+    );
+
+    $request_args['body'] = json_encode($title_request_body);
+    
+    // Send request to OpenAI for title
+    $title_response = wp_remote_post($api_endpoint, $request_args);
+    
+    // Default title in case of any errors
+    $title = 'Daily Summary for ' . current_time('Y-m-d');
+    
+    if (!is_wp_error($title_response)) {
+        $title_status = wp_remote_retrieve_response_code($title_response);
+        if ($title_status === 200) {
+            $title_body = wp_remote_retrieve_body($title_response);
+            $title_data = json_decode($title_body, true);
+            if (isset($title_data['choices'][0]['message']['content'])) {
+                $generated_title = trim($title_data['choices'][0]['message']['content']);
+                if (!empty($generated_title)) {
+                    $title = $generated_title;
+                }
+            }
+        }
+    }
+
+    return array(
+        'title' => $title,
+        'content' => $summary
+    );
 }
 
 function sumai_get_api_key() {
@@ -404,6 +458,11 @@ function sumai_sanitize_settings($input) {
     // Sanitize context prompt
     if (isset($input['context_prompt'])) {
         $sanitized['context_prompt'] = sanitize_textarea_field($input['context_prompt']);
+    }
+
+    // Sanitize title prompt
+    if (isset($input['title_prompt'])) {
+        $sanitized['title_prompt'] = sanitize_textarea_field($input['title_prompt']);
     }
 
     // Handle draft mode checkbox
@@ -735,6 +794,7 @@ function sumai_render_settings_page() {
     $options = get_option('sumai_settings', array());
     $feed_urls = isset($options['feed_urls']) ? $options['feed_urls'] : '';
     $context_prompt = isset($options['context_prompt']) ? $options['context_prompt'] : '';
+    $title_prompt = isset($options['title_prompt']) ? $options['title_prompt'] : '';
     $draft_mode = isset($options['draft_mode']) ? $options['draft_mode'] : true;
     $openai_api_key = isset($options['openai_api_key']) ? $options['openai_api_key'] : '';
     
@@ -743,6 +803,7 @@ function sumai_render_settings_page() {
     // Get feed URLs as array
     $feed_urls = isset($options['feed_urls']) ? array_filter(explode("\n", $options['feed_urls'])) : array();
     $context_prompt = isset($options['context_prompt']) ? $options['context_prompt'] : '';
+    $title_prompt = isset($options['title_prompt']) ? $options['title_prompt'] : '';
     $draft_mode = isset($options['draft_mode']) ? $options['draft_mode'] : true;
     $openai_api_key = isset($options['openai_api_key']) ? $options['openai_api_key'] : '';
     
@@ -774,6 +835,13 @@ function sumai_render_settings_page() {
                     <td>
                         <textarea name="sumai_settings[context_prompt]" rows="4" class="large-text"><?php echo esc_textarea($context_prompt); ?></textarea>
                         <p class="description">Custom prompt to shape the AI summary output.</p>
+                    </td>
+                </tr>
+                <tr>
+                    <th scope="row">Title Prompt</th>
+                    <td>
+                        <textarea name="sumai_settings[title_prompt]" rows="4" class="large-text"><?php echo esc_textarea($title_prompt); ?></textarea>
+                        <p class="description">Custom prompt for generating the post title.</p>
                     </td>
                 </tr>
                 <tr>
@@ -1124,3 +1192,64 @@ add_action('admin_notices', function() {
         echo '<div class="notice notice-error is-dismissible"><p>Failed to generate summary. Check error logs for details.</p></div>';
     }
 });
+
+/**
+ * Fetches content from a single feed URL
+ * 
+ * @param string $url The feed URL to fetch content from
+ * @param bool $force_fetch Whether to force fetch even if cached
+ * @return string The combined content from the feed
+ */
+function sumai_fetch_feed_content($url, $force_fetch = false) {
+    error_log("[SUMAI] Fetching feed content from: " . $url);
+    
+    // Initialize the feed
+    require_once(ABSPATH . WPINC . '/feed.php');
+    
+    // Clear the cache if force fetch is enabled
+    if ($force_fetch) {
+        delete_transient('sumai_feed_' . md5($url));
+    }
+    
+    // Try to get cached content first
+    $cached_content = get_transient('sumai_feed_' . md5($url));
+    if (!$force_fetch && $cached_content !== false) {
+        error_log("[SUMAI] Using cached content for: " . $url);
+        return $cached_content;
+    }
+    
+    // Fetch the feed
+    $feed = fetch_feed($url);
+    
+    if (is_wp_error($feed)) {
+        error_log("[SUMAI] Error fetching feed: " . $feed->get_error_message());
+        return '';
+    }
+    
+    // Get the feed items
+    $max_items = 10; // Limit to latest 10 items
+    $feed->init();
+    $feed->handle_content_type();
+    $feed->set_cache_duration(3600); // 1 hour cache
+    
+    $items = $feed->get_items(0, $max_items);
+    
+    if (empty($items)) {
+        error_log("[SUMAI] No items found in feed: " . $url);
+        return '';
+    }
+    
+    // Combine content from all items
+    $content = '';
+    foreach ($items as $item) {
+        $title = $item->get_title();
+        $description = $item->get_description();
+        $content .= $title . "\n" . strip_tags($description) . "\n\n";
+    }
+    
+    // Cache the content for 1 hour
+    set_transient('sumai_feed_' . md5($url), $content, 3600);
+    
+    error_log("[SUMAI] Successfully fetched and cached content from: " . $url);
+    return $content;
+}
