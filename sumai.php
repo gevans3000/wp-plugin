@@ -976,12 +976,15 @@ add_action('admin_footer', function() {
             e.preventDefault();
             var button = $(this);
             var originalText = button.val();
+            var results = $('#sumai-test-results');
+            
             button.prop('disabled', true).val('Testing...');
             
             $.post(ajaxurl, {
-                action: 'sumai_test_feeds'
+                action: 'sumai_test_feeds',
+                nonce: '<?php echo wp_create_nonce("sumai_test_feeds"); ?>'
             }, function(response) {
-                alert(response);
+                results.html('<pre>' + response + '</pre>');
                 button.prop('disabled', false).val(originalText);
             });
         });
