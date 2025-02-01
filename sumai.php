@@ -73,8 +73,7 @@ function sumai_generate_daily_summary() {
 
     // Load settings
     $options       = get_option( 'sumai_settings', array() );
-    $feed_urls     = isset( $options['feed_urls'] ) ? $options['feed_urls'] : array();
-    $openai_api_key  = isset( $options['openai_api_key'] ) ? $options['openai_api_key'] : '';
+    $feed_urls     = isset( $options['feed_urls'] ) ? $options['feed_urls'] : '';
     $context_prompt  = isset( $options['context_prompt'] ) ? $options['context_prompt'] : '';
     $draft_mode = isset( $options['draft_mode'] ) ? $options['draft_mode'] : true;
 
@@ -91,7 +90,7 @@ function sumai_generate_daily_summary() {
     }
 
     // Summarize the combined text
-    $summary = sumai_summarize_text( $combined_text, $openai_api_key, $context_prompt );
+    $summary = sumai_summarize_text( $combined_text, $context_prompt );
 
     // If summarization failed, log and exit
     if ( empty( $summary ) ) {
@@ -113,7 +112,7 @@ function sumai_generate_daily_summary() {
 
     if ( $post_id && !is_wp_error($post_id) ) {
         error_log('[SUMAI] Draft created - ID: ' . $post_id);
-        update_post_meta($post_id, '_sumai_feed_source', $feed_urls[0]);
+        update_post_meta($post_id, '_sumai_feed_source', $feed_urls);
         $status = $draft_mode ? 'draft' : 'published';
         sumai_log_event( "Successfully created $status post with ID: $post_id" );
     } else {
@@ -129,15 +128,17 @@ function sumai_generate_daily_summary() {
 /**
  * Fetches the latest article from each feed and concatenates them into one string.
  *
- * @param array $feed_urls Array of up to 3 feed URLs.
+ * @param string $feed_urls String of feed URLs separated by newlines.
  * @return string Combined textual content from the latest articles. Empty if none found.
  */
-function sumai_fetch_latest_articles( $feed_urls = array() ) {
+function sumai_fetch_latest_articles( $feed_urls = '' ) {
     $combined_text = '';
 
-    if ( ! is_array( $feed_urls ) ) {
+    if ( empty( $feed_urls ) ) {
         return $combined_text;
     }
+
+    $feed_urls = array_filter(explode("\n", $feed_urls));
 
     foreach ( $feed_urls as $feed_url ) {
         $feed_url = trim( $feed_url );
@@ -206,13 +207,18 @@ function sumai_fetch_latest_articles( $feed_urls = array() ) {
  * Uses a fictional "gpt-4o-mini" model endpoint as described in the task.
  *
  * @param string $text           The full text to summarize.
- * @param string $openai_api_key The user's OpenAI API key.
  * @param string $context_prompt A custom prompt to shape the AI summary output.
  * @return string Summarized text or empty string if there was an error.
  */
-function sumai_summarize_text( $text, $openai_api_key, $context_prompt ) {
+function sumai_summarize_text( $text, $context_prompt ) {
+    $api_key = sumai_get_api_key();
+    if (empty($api_key)) {
+        error_log('Sumai: OpenAI API key not found in .env file');
+        return '';
+    }
+
     // Basic input validation
-    if ( empty( $text ) || empty( $openai_api_key ) ) {
+    if ( empty( $text ) ) {
         return '';
     }
 
@@ -244,7 +250,7 @@ function sumai_summarize_text( $text, $openai_api_key, $context_prompt ) {
     $request_args = array(
         'headers' => array(
             'Content-Type'  => 'application/json',
-            'Authorization' => 'Bearer ' . $openai_api_key,
+            'Authorization' => 'Bearer ' . $api_key,
         ),
         'body'    => json_encode( $request_body ),
         'method'  => 'POST',
@@ -289,6 +295,31 @@ function sumai_summarize_text( $text, $openai_api_key, $context_prompt ) {
     return $final_summary;
 }
 
+function sumai_get_api_key() {
+    static $api_key = null;
+    if ($api_key === null) {
+        // Get home directory path
+        $home_dir = dirname(dirname(ABSPATH)); // /home/tzjwuepq
+        $env_path = $home_dir . '/.env';
+        
+        if (file_exists($env_path)) {
+            $env_content = file_get_contents($env_path);
+            foreach (explode("\n", $env_content) as $line) {
+                $line = trim($line);
+                if (strpos($line, 'OPENAI_API_KEY=') === 0) {
+                    $api_key = trim(substr($line, strlen('OPENAI_API_KEY=')));
+                    break;
+                }
+            }
+        }
+        
+        if ($api_key === null) {
+            error_log('Sumai: OpenAI API key not found in ' . $env_path);
+        }
+    }
+    return $api_key;
+}
+
 /* -------------------------------------------------------------------------
  * 6. ADMIN SETTINGS PAGE
  * ------------------------------------------------------------------------- */
@@ -323,17 +354,21 @@ function sumai_register_settings() {
  * @param array $input
  * @return array
  */
-function sumai_sanitize_settings( $input ) {
+function sumai_sanitize_settings($input) {
     $sanitized = array();
 
-    // Sanitize feed URLs
-    if (isset($input['feed_urls']) && is_array($input['feed_urls'])) {
-        $sanitized['feed_urls'] = array_map('esc_url_raw', $input['feed_urls']);
-    }
-
-    // Sanitize API key
-    if (isset($input['openai_api_key'])) {
-        $sanitized['openai_api_key'] = sanitize_text_field($input['openai_api_key']);
+    // Handle feed URLs - store as a simple string with newlines
+    if (isset($input['feed_urls'])) {
+        $urls = array_filter(
+            explode("\n", trim($input['feed_urls'])),
+            function($url) { 
+                $trimmed = trim($url);
+                return !empty($trimmed) && filter_var($trimmed, FILTER_VALIDATE_URL);
+            }
+        );
+        
+        // Store as a string with newlines
+        $sanitized['feed_urls'] = implode("\n", array_map('trim', $urls));
     }
 
     // Sanitize context prompt
@@ -341,12 +376,8 @@ function sumai_sanitize_settings( $input ) {
         $sanitized['context_prompt'] = sanitize_textarea_field($input['context_prompt']);
     }
 
-    // Sanitize draft mode
+    // Handle draft mode checkbox
     $sanitized['draft_mode'] = isset($input['draft_mode']) ? true : false;
-
-    // Sanitize posts per day
-    $posts_per_day = isset($input['posts_per_day']) ? intval($input['posts_per_day']) : 1;
-    $sanitized['posts_per_day'] = min(max($posts_per_day, 1), 9); // Limit between 1 and 9
 
     return $sanitized;
 }
@@ -359,136 +390,107 @@ function sumai_render_settings_page() {
         return;
     }
 
-    // Handle manual generation
-    if (isset($_POST['sumai_generate_now']) && isset($_POST['sumai_nonce']) && 
-        wp_verify_nonce($_POST['sumai_nonce'], 'sumai_generate_now')) {
-        sumai_generate_daily_summary();
-        echo '<div class="notice notice-success is-dismissible"><p>Summary post has been generated. Check the Posts → Draft section to find it.</p></div>';
+    global $wpdb;
+    $debug_messages = array();
+    
+    // Handle settings update
+    if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+        if (isset($_POST['sumai_settings']) && check_admin_referer('sumai_settings_update')) {
+            $raw_data = $_POST['sumai_settings'];
+            $debug_messages[] = "Raw form data:\n" . print_r($raw_data, true);
+            
+            $settings = sumai_sanitize_settings($raw_data);
+            $debug_messages[] = "Sanitized settings:\n" . print_r($settings, true);
+            
+            // Save settings using update_option
+            $save_result = update_option('sumai_settings', $settings);
+            $debug_messages[] = "Save result: " . ($save_result ? "Success" : "Failed");
+            
+            echo '<div class="updated"><p>Settings saved.</p></div>';
+        }
+        // Handle manual generation
+        elseif (isset($_POST['sumai_generate_now']) && check_admin_referer('sumai_generate_now')) {
+            sumai_generate_daily_summary();
+            echo '<div class="notice notice-success is-dismissible"><p>Summary post has been generated. Check the Posts section to find it.</p></div>';
+        }
     }
 
+    // Get settings
     $options = get_option('sumai_settings', array());
-    $feed_urls = isset($options['feed_urls']) ? $options['feed_urls'] : array('');
-    $openai_api_key = isset($options['openai_api_key']) ? $options['openai_api_key'] : '';
+    $debug_messages[] = "Retrieved settings from database:\n" . print_r($options, true);
+    
+    // Get feed URLs as array
+    $feed_urls = isset($options['feed_urls']) ? array_filter(explode("\n", $options['feed_urls'])) : array();
     $context_prompt = isset($options['context_prompt']) ? $options['context_prompt'] : '';
     $draft_mode = isset($options['draft_mode']) ? $options['draft_mode'] : true;
-    $posts_per_day = isset($options['posts_per_day']) ? $options['posts_per_day'] : 1;
+    
+    $debug_messages[] = "Feed URLs for display (" . count($feed_urls) . "):\n" . print_r($feed_urls, true);
     ?>
     <div class="wrap">
-        <h1><?php echo esc_html(get_admin_page_title()); ?></h1>
+        <h1>Sumai Settings</h1>
 
-        <form action="options.php" method="post">
-            <?php
-            settings_fields('sumai_settings');
-            do_settings_sections('sumai_settings');
-            ?>
-
-            <h2>Feed Settings</h2>
+        <!-- Debug Information -->
+        <div class="card" style="max-width: 800px; margin-bottom: 20px; padding: 10px; background-color: #f8f9fa;">
+            <h2>Debug Information</h2>
+            <pre style="background: #fff; padding: 10px; overflow: auto; max-height: 200px; white-space: pre-wrap;">
+<?php foreach ($debug_messages as $message): ?>
+<?php echo esc_html($message) . "\n----------------------------------------\n"; ?>
+<?php endforeach; ?>
+            </pre>
+        </div>
+        
+        <!-- Settings Form -->
+        <form method="post">
+            <?php wp_nonce_field('sumai_settings_update'); ?>
             <table class="form-table">
                 <tr>
                     <th scope="row">RSS Feed URLs</th>
                     <td>
-                        <?php foreach ($feed_urls as $index => $url): ?>
-                            <input type="url" name="sumai_settings[feed_urls][]" value="<?php echo esc_url($url); ?>" class="regular-text">
-                            <br>
-                        <?php endforeach; ?>
+                        <textarea name="sumai_settings[feed_urls]" rows="3" class="large-text" placeholder="Enter one RSS feed URL per line"><?php 
+                            if (!empty($feed_urls)) {
+                                echo esc_textarea(implode("\n", $feed_urls));
+                            }
+                        ?></textarea>
+                        <p class="description">Enter one RSS feed URL per line. Currently saved URLs: <?php echo count($feed_urls); ?></p>
                     </td>
                 </tr>
-
-                <tr>
-                    <th scope="row">OpenAI API Key</th>
-                    <td>
-                        <input type="password" name="sumai_settings[openai_api_key]" value="<?php echo esc_attr($openai_api_key); ?>" class="regular-text">
-                    </td>
-                </tr>
-
                 <tr>
                     <th scope="row">Context Prompt</th>
                     <td>
                         <textarea name="sumai_settings[context_prompt]" rows="4" class="large-text"><?php echo esc_textarea($context_prompt); ?></textarea>
+                        <p class="description">Custom prompt to shape the AI summary output.</p>
                     </td>
                 </tr>
-
                 <tr>
-                    <th scope="row">Post as Draft</th>
+                    <th scope="row">Draft Mode</th>
                     <td>
-                        <input type="checkbox" name="sumai_settings[draft_mode]" <?php checked($draft_mode); ?>>
-                        <label>Create posts as drafts instead of publishing immediately</label>
-                    </td>
-                </tr>
-
-                <tr>
-                    <th scope="row">Posts Per Day</th>
-                    <td>
-                        <input type="number" name="sumai_settings[posts_per_day]" value="<?php echo esc_attr($posts_per_day); ?>" min="1" max="9">
-                        <p class="description">Number of times to randomly post throughout the day (1-9)</p>
+                        <label>
+                            <input type="checkbox" name="sumai_settings[draft_mode]" value="1" <?php checked($draft_mode); ?>>
+                            Create posts as drafts
+                        </label>
                     </td>
                 </tr>
             </table>
-
             <?php submit_button('Save Settings'); ?>
         </form>
 
-        <hr>
-
-        <h2>Manual Post Generation</h2>
-        <form method="post">
-            <?php wp_nonce_field('sumai_generate_now', 'sumai_nonce'); ?>
-            <p>
+        <!-- Manual Generation Form -->
+        <div class="card" style="max-width: 800px; margin-top: 20px; padding: 10px;">
+            <h2>Manual Generation</h2>
+            <p>Click the button below to generate a summary post immediately.</p>
+            <form method="post">
+                <?php wp_nonce_field('sumai_generate_now'); ?>
                 <input type="submit" name="sumai_generate_now" class="button button-primary" value="Generate Summary Now">
-            </p>
-        </form>
-
-        <?php if (current_user_can('manage_options')): ?>
-            <hr>
-            <h2>Debug Information</h2>
-            <h3>Scheduled Posts</h3>
-            <?php
-            $cron = _get_cron_array();
-            $sumai_schedules = array();
-            
-            foreach ($cron as $timestamp => $cron_jobs) {
-                if (isset($cron_jobs['sumai_daily_event'])) {
-                    $sumai_schedules[] = array(
-                        'timestamp' => $timestamp,
-                        'datetime' => wp_date('Y-m-d H:i:s', $timestamp),
-                        'relative' => human_time_diff($timestamp)
-                    );
-                }
-            }
-            
-            if (empty($sumai_schedules)) {
-                echo '<p>No scheduled posts found. Try deactivating and reactivating the plugin to reset schedules.</p>';
-            } else {
-                echo '<table class="widefat">';
-                echo '<thead><tr><th>Next Post Date</th><th>Time Until Post</th></tr></thead>';
-                echo '<tbody>';
-                foreach ($sumai_schedules as $schedule) {
-                    echo '<tr>';
-                    echo '<td>' . esc_html($schedule['datetime']) . '</td>';
-                    echo '<td>In ' . esc_html($schedule['relative']) . '</td>';
-                    echo '</tr>';
-                }
-                echo '</tbody></table>';
-            }
-            ?>
-        <?php endif; ?>
-        
-        <?php if (current_user_can('manage_options')): ?>
-            <div class="notice notice-warning">
-                <h3><?php echo esc_html__('Temporary Testing Tools', 'sumai'); ?></h3>
-                <p><?php echo esc_html__('Current Cron Token:', 'sumai'); ?> <code><?php echo esc_html(get_option('sumai_cron_token')); ?></code></p>
-                <p><?php echo esc_html__('Cron URL:', 'sumai'); ?> <code><?php echo esc_url(site_url('/wp-cron-trigger.php?token=' . get_option('sumai_cron_token'))); ?></code></p>
-                <p class="description"><?php echo esc_html__('This section will be automatically hidden in production versions', 'sumai'); ?></p>
-            </div>
-        <?php endif; ?>
+            </form>
+        </div>
     </div>
     <?php
 }
 
 /* -------------------------------------------------------------------------
  * 7. MANUAL POSTING BUTTON
- * -------------------------------------------------------------------------
- * Handled in the sumai_render_settings_page() function above.
+ * ------------------------------------------------------------------------- */
+/* Handled in the sumai_render_settings_page() function above.
  * When the button is clicked, it calls sumai_generate_daily_summary() directly.
  */
 
