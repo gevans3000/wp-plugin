@@ -70,54 +70,71 @@ add_action( 'sumai_daily_event', 'sumai_generate_daily_summary' );
  * @return void
  */
 function sumai_generate_daily_summary() {
+    try {
+        // Load settings
+        $options = get_option('sumai_settings', array());
+        $feed_urls = isset($options['feed_urls']) ? $options['feed_urls'] : '';
+        $context_prompt = isset($options['context_prompt']) ? $options['context_prompt'] : '';
+        $draft_mode = isset($options['draft_mode']) ? $options['draft_mode'] : true;
 
-    // Load settings
-    $options       = get_option( 'sumai_settings', array() );
-    $feed_urls     = isset( $options['feed_urls'] ) ? $options['feed_urls'] : '';
-    $context_prompt  = isset( $options['context_prompt'] ) ? $options['context_prompt'] : '';
-    $draft_mode = isset( $options['draft_mode'] ) ? $options['draft_mode'] : true;
+        // Track cron execution
+        sumai_track_cron_execution();
 
-    // Prune old logs to keep them at 30 days
-    sumai_prune_logs_older_than_30_days();
+        // Validate requirements
+        if (empty($feed_urls)) {
+            error_log("[SUMAI] No feed URLs configured");
+            return;
+        }
 
-    // Fetch combined article text (just the latest from each feed)
-    $combined_text = sumai_fetch_latest_articles( $feed_urls );
+        // Get the content
+        $content = sumai_fetch_latest_articles($feed_urls);
+        if (empty($content)) {
+            error_log("[SUMAI] No new content to process");
+            sumai_track_post_creation(0, false);
+            return;
+        }
 
-    // If no content is available, log and exit
-    if ( empty( $combined_text ) ) {
-        sumai_log_event( 'No feed data available. Skipping daily post.', true );
-        return;
-    }
+        // Get the summary
+        $summary = sumai_summarize_text($content, $context_prompt);
+        if (empty($summary)) {
+            error_log("[SUMAI] Failed to generate summary");
+            sumai_track_post_creation(0, false);
+            return;
+        }
 
-    // Summarize the combined text
-    $summary = sumai_summarize_text( $combined_text, $context_prompt );
+        // Create the post
+        $post_data = array(
+            'post_title'    => $summary['title'],
+            'post_content'  => $summary['content'],
+            'post_status'   => $draft_mode ? 'draft' : 'publish',
+            'post_type'     => 'post',
+            'post_author'   => 1
+        );
 
-    // If summarization failed, log and exit
-    if ( empty( $summary ) ) {
-        sumai_log_event( 'OpenAI summarization failed. Skipping daily post.', true );
-        return;
-    }
+        // Insert the post
+        $post_id = wp_insert_post($post_data, true);
 
-    // Create post
-    $post_data = array(
-        'post_title'    => 'Daily Summary for ' . current_time( 'Y-m-d' ),
-        'post_content'  => $summary,
-        'post_status'   => $draft_mode ? 'draft' : 'publish',
-        'post_type'     => 'post',
-        'post_author'   => 1
-    );
+        if (is_wp_error($post_id)) {
+            error_log("[SUMAI] Failed to create post: " . $post_id->get_error_message());
+            sumai_track_post_creation(0, false);
+            return;
+        }
 
-    error_log('[SUMAI] Inserting post: ' . print_r($post_data, true));
-    $post_id = wp_insert_post( $post_data );
+        // Track successful post creation
+        sumai_track_post_creation($post_id, true);
+        
+        // Update feed processing history with post status
+        $processed_items = get_option('sumai_processed_items', array());
+        foreach ($processed_items as $feed_url => &$item) {
+            $item['post_status'] = $draft_mode ? 'draft' : 'publish';
+        }
+        update_option('sumai_processed_items', $processed_items);
 
-    if ( $post_id && !is_wp_error($post_id) ) {
-        error_log('[SUMAI] Draft created - ID: ' . $post_id);
-        update_post_meta($post_id, '_sumai_feed_source', $feed_urls);
-        $status = $draft_mode ? 'draft' : 'published';
-        sumai_log_event( "Successfully created $status post with ID: $post_id" );
-    } else {
-        error_log('[SUMAI] Error creating post: ' . $post_id->get_error_message());
-        sumai_log_event( 'Failed to create post', true );
+        return $post_id;
+    } catch (Exception $e) {
+        error_log("[SUMAI] Exception in daily summary generation: " . $e->getMessage());
+        sumai_track_post_creation(0, false);
+        return null;
     }
 }
 
@@ -131,71 +148,78 @@ function sumai_generate_daily_summary() {
  * @param string $feed_urls String of feed URLs separated by newlines.
  * @return string Combined textual content from the latest articles. Empty if none found.
  */
-function sumai_fetch_latest_articles( $feed_urls = '' ) {
+function sumai_fetch_latest_articles($feed_urls = '') {
     $combined_text = '';
 
-    if ( empty( $feed_urls ) ) {
+    if (empty($feed_urls)) {
         return $combined_text;
     }
 
     $feed_urls = array_filter(explode("\n", $feed_urls));
+    $processed_items = get_option('sumai_processed_items', array());
 
-    foreach ( $feed_urls as $feed_url ) {
-        $feed_url = trim( $feed_url );
-        if ( empty( $feed_url ) ) {
+    foreach ($feed_urls as $feed_url) {
+        $feed_url = trim($feed_url);
+        if (empty($feed_url)) {
             continue;
         }
 
-        // Enhanced feed processing with error handling
-        $response = wp_remote_get($feed_url, [
-            'timeout' => 30,
-            'sslverify' => false,
-            'headers' => [
-                'User-Agent' => 'SUMAI/1.0 (+https://biglife360.com)'
-            ]
-        ]);
+        try {
+            $rss = fetch_feed($feed_url);
 
-        if (is_wp_error($response)) {
-            error_log('[SUMAI] Feed Error: ' . $response->get_error_message());
+            if (is_wp_error($rss)) {
+                error_log("[SUMAI] Error fetching feed $feed_url: " . $rss->get_error_message());
+                continue;
+            }
+
+            $maxitems = $rss->get_item_quantity(1); // Get only the latest item
+            $rss_items = $rss->get_items(0, $maxitems);
+
+            if (!empty($rss_items)) {
+                $latest_item = $rss_items[0];
+                $item_id = $latest_item->get_id();
+                $item_url = $latest_item->get_permalink();
+                $item_date = $latest_item->get_date('U');
+
+                // Check if we've already processed this item
+                if (!isset($processed_items[$feed_url]) || 
+                    $processed_items[$feed_url]['id'] !== $item_id ||
+                    $processed_items[$feed_url]['date'] < $item_date) {
+                    
+                    // Get the content
+                    $title = $latest_item->get_title();
+                    $content = $latest_item->get_content();
+                    $description = $latest_item->get_description();
+                    
+                    // Use content if available, otherwise use description
+                    $text = !empty($content) ? $content : $description;
+                    
+                    // Add title and content to combined text
+                    $combined_text .= "Article Title: $title\n\n";
+                    $combined_text .= wp_strip_all_tags($text) . "\n\n";
+                    
+                    // Update processed items
+                    $processed_items[$feed_url] = array(
+                        'id' => $item_id,
+                        'url' => $item_url,
+                        'date' => $item_date,
+                        'title' => $title
+                    );
+                } else {
+                    error_log("[SUMAI] Skipping already processed item from feed: $feed_url");
+                    continue;
+                }
+            }
+        } catch (Exception $e) {
+            error_log("[SUMAI] Exception processing feed $feed_url: " . $e->getMessage());
             continue;
         }
-
-        $xml = simplexml_load_string(wp_remote_retrieve_body($response));
-        if (!$xml) {
-            error_log('[SUMAI] Invalid XML from feed');
-            continue;
-        }
-
-        // Attempt to extract the first (most recent) item
-        if ( isset( $xml->channel->item ) ) {
-            $item = $xml->channel->item[0]; // the most recent item
-        } elseif ( isset( $xml->entry ) ) {
-            // Some feeds (ATOM) may use <entry> instead of <item>
-            $item = $xml->entry[0];
-        } else {
-            error_log('[SUMAI] No valid RSS <item> found for feed: ' . $feed_url);
-            continue;
-        }
-
-        $description = '';
-        // For RSS
-        if ( isset( $item->description ) ) {
-            $description = (string) $item->description;
-        }
-        // For ATOM, you might need <content> or <summary>
-        if ( empty( $description ) && isset( $item->summary ) ) {
-            $description = (string) $item->summary;
-        }
-        if ( empty( $description ) && isset( $item->content ) ) {
-            $description = (string) $item->content;
-        }
-
-        // Combine
-        $combined_text .= "\n" . $description;
-
     }
 
-    return trim( $combined_text );
+    // Save the updated processed items
+    update_option('sumai_processed_items', $processed_items);
+
+    return $combined_text;
 }
 
 /* -------------------------------------------------------------------------
@@ -292,7 +316,7 @@ function sumai_summarize_text( $text, $context_prompt ) {
     }
     $final_summary = implode( ' ', $summary_words );
 
-    return $final_summary;
+    return array('title' => 'Daily Summary for ' . current_time( 'Y-m-d' ), 'content' => $final_summary);
 }
 
 function sumai_get_api_key() {
@@ -385,6 +409,284 @@ function sumai_sanitize_settings($input) {
 /**
  * Renders the plugin settings page.
  */
+function sumai_get_debug_info() {
+    global $wpdb;
+    $debug = array();
+    
+    // Basic WordPress Info
+    $debug['wordpress'] = array(
+        'version' => get_bloginfo('version'),
+        'url' => get_bloginfo('url'),
+        'language' => get_bloginfo('language'),
+        'timezone' => wp_timezone_string(),
+        'debug_mode' => WP_DEBUG ? 'Enabled' : 'Disabled',
+        'multisite' => is_multisite() ? 'Yes' : 'No',
+        'permalink_structure' => get_option('permalink_structure'),
+        'active_theme' => wp_get_theme()->get('Name'),
+        'post_types' => implode(', ', get_post_types(['public' => true]))
+    );
+    
+    // Database Info
+    $debug['database'] = array(
+        'wp_version' => get_option('db_version'),
+        'table_prefix' => $wpdb->prefix,
+        'charset' => $wpdb->charset,
+        'collate' => $wpdb->collate,
+        'last_error' => $wpdb->last_error,
+        'show_errors' => $wpdb->show_errors ? 'Yes' : 'No'
+    );
+
+    // Plugin Settings
+    $options = get_option('sumai_settings', array());
+    $debug['settings'] = array(
+        'feed_urls' => isset($options['feed_urls']) ? explode("\n", $options['feed_urls']) : array(),
+        'draft_mode' => isset($options['draft_mode']) ? 'Yes' : 'No',
+        'context_prompt_length' => isset($options['context_prompt']) ? strlen($options['context_prompt']) : 0,
+        'settings_saved_count' => get_option('sumai_settings_saves', 0)
+    );
+    
+    // Feed Processing History
+    $processed_items = get_option('sumai_processed_items', array());
+    $debug['feed_history'] = array();
+    foreach ($processed_items as $feed_url => $item) {
+        $debug['feed_history'][$feed_url] = array(
+            'last_processed' => date('Y-m-d H:i:s', $item['date']),
+            'last_title' => $item['title'],
+            'item_id' => $item['id'],
+            'last_status' => isset($item['post_status']) ? $item['post_status'] : 'unknown'
+        );
+    }
+    
+    // Post Creation Stats
+    $debug['post_stats'] = array(
+        'total_posts_created' => get_option('sumai_total_posts', 0),
+        'failed_attempts' => get_option('sumai_failed_posts', 0),
+        'last_post_id' => get_option('sumai_last_post_id', 'None'),
+        'last_post_status' => 'None'
+    );
+    
+    // If we have a last post ID, get its status
+    $last_post_id = get_option('sumai_last_post_id', 0);
+    if ($last_post_id) {
+        $last_post = get_post($last_post_id);
+        if ($last_post) {
+            $debug['post_stats']['last_post_status'] = $last_post->post_status;
+            $debug['post_stats']['last_post_date'] = $last_post->post_date;
+            $debug['post_stats']['last_post_modified'] = $last_post->post_modified;
+        }
+    }
+    
+    // Cron Status
+    $next_scheduled = wp_next_scheduled('sumai_daily_event');
+    $debug['cron'] = array(
+        'next_run' => $next_scheduled ? date('Y-m-d H:i:s', $next_scheduled) : 'Not scheduled',
+        'last_token_rotation' => get_option('sumai_last_token_rotation', 'Never'),
+        'cron_token' => substr(get_option('sumai_cron_token', 'Not set'), 0, 8) . '...',
+        'wp_cron_enabled' => defined('DISABLE_WP_CRON') && DISABLE_WP_CRON ? 'No' : 'Yes',
+        'cron_schedules' => implode(', ', array_keys(wp_get_schedules())),
+        'missed_schedules' => get_option('sumai_missed_schedules', 0)
+    );
+    
+    // System Information
+    $debug['system'] = array(
+        'php_version' => PHP_VERSION,
+        'max_execution_time' => ini_get('max_execution_time'),
+        'memory_limit' => ini_get('memory_limit'),
+        'upload_max_filesize' => ini_get('upload_max_filesize'),
+        'post_max_size' => ini_get('post_max_size'),
+        'max_input_vars' => ini_get('max_input_vars'),
+        'allow_url_fopen' => ini_get('allow_url_fopen') ? 'Yes' : 'No',
+        'curl_version' => function_exists('curl_version') ? curl_version()['version'] : 'Not Available',
+        'openssl_version' => defined('OPENSSL_VERSION_TEXT') ? OPENSSL_VERSION_TEXT : 'Unknown'
+    );
+    
+    // Plugin Conflicts
+    $active_plugins = get_option('active_plugins');
+    $conflicting_plugins = array();
+    $known_conflicts = array(
+        'another-rss-feed' => 'Another RSS Feed Plugin',
+        'wp-cron-control' => 'WP Cron Control',
+        'wp-super-cache' => 'WP Super Cache',
+        'w3-total-cache' => 'W3 Total Cache'
+    );
+    
+    foreach ($active_plugins as $plugin) {
+        foreach ($known_conflicts as $slug => $name) {
+            if (strpos($plugin, $slug) !== false) {
+                $conflicting_plugins[] = $name;
+            }
+        }
+    }
+    
+    $debug['plugin_conflicts'] = empty($conflicting_plugins) ? array('No known conflicts') : $conflicting_plugins;
+    
+    // Recent Error Log
+    $error_log = array();
+    if (defined('WP_DEBUG_LOG') && WP_DEBUG_LOG) {
+        $log_file = WP_CONTENT_DIR . '/debug.log';
+        if (file_exists($log_file)) {
+            $log_content = file_get_contents($log_file);
+            if ($log_content) {
+                // Get last 10 lines containing [SUMAI]
+                preg_match_all('/.*\[SUMAI\].*$/m', $log_content, $matches);
+                $error_log = array_slice($matches[0], -10);
+            }
+        }
+    }
+    $debug['recent_errors'] = $error_log;
+    
+    return $debug;
+}
+
+function sumai_render_debug_info($debug_info) {
+    ?>
+    <div class="card" style="max-width: 1200px; margin-bottom: 20px;">
+        <h2 style="padding: 10px; margin: 0; background: #f0f0f1; border-bottom: 1px solid #c3c4c7;">
+            Debug Information
+            <button type="button" class="button button-small" style="float: right;" onclick="navigator.clipboard.writeText(document.getElementById('debug-content').innerText)">
+                Copy Debug Info
+            </button>
+        </h2>
+        <div id="debug-content" style="padding: 15px;">
+            <div class="debug-section">
+                <h3>WordPress Information</h3>
+                <table class="widefat striped" style="margin-bottom: 20px;">
+                    <?php foreach ($debug_info['wordpress'] as $key => $value): ?>
+                    <tr>
+                        <td><strong><?php echo ucwords(str_replace('_', ' ', $key)); ?></strong></td>
+                        <td><?php echo esc_html($value); ?></td>
+                    </tr>
+                    <?php endforeach; ?>
+                </table>
+            </div>
+
+            <div class="debug-section">
+                <h3>Database Information</h3>
+                <table class="widefat striped" style="margin-bottom: 20px;">
+                    <?php foreach ($debug_info['database'] as $key => $value): ?>
+                    <tr>
+                        <td><strong><?php echo ucwords(str_replace('_', ' ', $key)); ?></strong></td>
+                        <td><?php echo esc_html($value); ?></td>
+                    </tr>
+                    <?php endforeach; ?>
+                </table>
+            </div>
+
+            <div class="debug-section">
+                <h3>Plugin Settings</h3>
+                <table class="widefat striped" style="margin-bottom: 20px;">
+                    <tr>
+                        <td><strong>Feed URLs (<?php echo count($debug_info['settings']['feed_urls']); ?>)</strong></td>
+                        <td>
+                            <?php foreach ($debug_info['settings']['feed_urls'] as $url): ?>
+                                <?php echo esc_html($url); ?><br>
+                            <?php endforeach; ?>
+                        </td>
+                    </tr>
+                    <tr>
+                        <td><strong>Draft Mode</strong></td>
+                        <td><?php echo esc_html($debug_info['settings']['draft_mode']); ?></td>
+                    </tr>
+                    <tr>
+                        <td><strong>Context Prompt Length</strong></td>
+                        <td><?php echo esc_html($debug_info['settings']['context_prompt_length']); ?> characters</td>
+                    </tr>
+                    <tr>
+                        <td><strong>Settings Saved Count</strong></td>
+                        <td><?php echo esc_html($debug_info['settings']['settings_saved_count']); ?></td>
+                    </tr>
+                </table>
+            </div>
+
+            <div class="debug-section">
+                <h3>Feed Processing History</h3>
+                <table class="widefat striped" style="margin-bottom: 20px;">
+                    <thead>
+                        <tr>
+                            <th>Feed URL</th>
+                            <th>Last Processed</th>
+                            <th>Last Title</th>
+                            <th>Last Status</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                    <?php foreach ($debug_info['feed_history'] as $feed_url => $info): ?>
+                        <tr>
+                            <td><?php echo esc_html($feed_url); ?></td>
+                            <td><?php echo esc_html($info['last_processed']); ?></td>
+                            <td><?php echo esc_html($info['last_title']); ?></td>
+                            <td><?php echo esc_html($info['last_status']); ?></td>
+                        </tr>
+                    <?php endforeach; ?>
+                    </tbody>
+                </table>
+            </div>
+
+            <div class="debug-section">
+                <h3>Post Creation Stats</h3>
+                <table class="widefat striped" style="margin-bottom: 20px;">
+                    <?php foreach ($debug_info['post_stats'] as $key => $value): ?>
+                    <tr>
+                        <td><strong><?php echo ucwords(str_replace('_', ' ', $key)); ?></strong></td>
+                        <td><?php echo esc_html($value); ?></td>
+                    </tr>
+                    <?php endforeach; ?>
+                </table>
+            </div>
+
+            <div class="debug-section">
+                <h3>Cron Status</h3>
+                <table class="widefat striped" style="margin-bottom: 20px;">
+                    <?php foreach ($debug_info['cron'] as $key => $value): ?>
+                    <tr>
+                        <td><strong><?php echo ucwords(str_replace('_', ' ', $key)); ?></strong></td>
+                        <td><?php echo esc_html($value); ?></td>
+                    </tr>
+                    <?php endforeach; ?>
+                </table>
+            </div>
+
+            <div class="debug-section">
+                <h3>System Information</h3>
+                <table class="widefat striped" style="margin-bottom: 20px;">
+                    <?php foreach ($debug_info['system'] as $key => $value): ?>
+                    <tr>
+                        <td><strong><?php echo ucwords(str_replace('_', ' ', $key)); ?></strong></td>
+                        <td><?php echo esc_html($value); ?></td>
+                    </tr>
+                    <?php endforeach; ?>
+                </table>
+            </div>
+
+            <div class="debug-section">
+                <h3>Plugin Conflicts</h3>
+                <table class="widefat striped" style="margin-bottom: 20px;">
+                    <tr>
+                        <td><strong>Conflicting Plugins</strong></td>
+                        <td>
+                            <?php foreach ($debug_info['plugin_conflicts'] as $plugin): ?>
+                                <?php echo esc_html($plugin); ?><br>
+                            <?php endforeach; ?>
+                        </td>
+                    </tr>
+                </table>
+            </div>
+
+            <?php if (!empty($debug_info['recent_errors'])): ?>
+            <div class="debug-section">
+                <h3>Recent Error Log</h3>
+                <div style="background: #f6f7f7; padding: 10px; max-height: 200px; overflow-y: auto;">
+                    <?php foreach ($debug_info['recent_errors'] as $error): ?>
+                        <div style="font-family: monospace; margin-bottom: 5px;"><?php echo esc_html($error); ?></div>
+                    <?php endforeach; ?>
+                </div>
+            </div>
+            <?php endif; ?>
+        </div>
+    </div>
+    <?php
+}
+
 function sumai_render_settings_page() {
     if (!current_user_can('manage_options')) {
         return;
@@ -406,6 +708,9 @@ function sumai_render_settings_page() {
             $save_result = update_option('sumai_settings', $settings);
             $debug_messages[] = "Save result: " . ($save_result ? "Success" : "Failed");
             
+            // Track settings save
+            sumai_track_settings_save();
+            
             echo '<div class="updated"><p>Settings saved.</p></div>';
         }
         // Handle manual generation
@@ -417,6 +722,10 @@ function sumai_render_settings_page() {
 
     // Get settings
     $options = get_option('sumai_settings', array());
+    $feed_urls = isset($options['feed_urls']) ? array_filter(explode("\n", $options['feed_urls'])) : array();
+    $context_prompt = isset($options['context_prompt']) ? $options['context_prompt'] : '';
+    $draft_mode = isset($options['draft_mode']) ? $options['draft_mode'] : true;
+    
     $debug_messages[] = "Retrieved settings from database:\n" . print_r($options, true);
     
     // Get feed URLs as array
@@ -430,14 +739,7 @@ function sumai_render_settings_page() {
         <h1>Sumai Settings</h1>
 
         <!-- Debug Information -->
-        <div class="card" style="max-width: 800px; margin-bottom: 20px; padding: 10px; background-color: #f8f9fa;">
-            <h2>Debug Information</h2>
-            <pre style="background: #fff; padding: 10px; overflow: auto; max-height: 200px; white-space: pre-wrap;">
-<?php foreach ($debug_messages as $message): ?>
-<?php echo esc_html($message) . "\n----------------------------------------\n"; ?>
-<?php endforeach; ?>
-            </pre>
-        </div>
+        <?php sumai_render_debug_info(sumai_get_debug_info()); ?>
         
         <!-- Settings Form -->
         <form method="post">
@@ -473,6 +775,14 @@ function sumai_render_settings_page() {
             </table>
             <?php submit_button('Save Settings'); ?>
         </form>
+
+        <!-- Test RSS Feeds -->
+        <div class="card" style="max-width: 800px; margin-top: 20px; padding: 10px;">
+            <h2>Test RSS Feeds</h2>
+            <p>Click the button below to test the RSS feeds and check for new content.</p>
+            <button class="button button-secondary sumai-test-feeds">Test RSS Feeds</button>
+            <div id="sumai-test-results" style="margin-top: 10px;"></div>
+        </div>
 
         <!-- Manual Generation Form -->
         <div class="card" style="max-width: 800px; margin-top: 20px; padding: 10px;">
@@ -600,4 +910,105 @@ add_action('sumai_rotate_cron_token', function() {
 });
 if (!wp_next_scheduled('sumai_rotate_cron_token')) {
     wp_schedule_event(time(), 'weekly', 'sumai_rotate_cron_token');
+}
+
+// Test the RSS feed fetching and processing
+function sumai_test_feeds() {
+    $options = get_option('sumai_settings', array());
+    $feed_urls = isset($options['feed_urls']) ? $options['feed_urls'] : '';
+    
+    if (empty($feed_urls)) {
+        return "No feed URLs configured.";
+    }
+
+    $processed_items = get_option('sumai_processed_items', array());
+    $output = "Testing RSS Feeds:\n\n";
+    
+    // Get new content
+    $content = sumai_fetch_latest_articles($feed_urls);
+    
+    if (empty($content)) {
+        $output .= "No new content found.\n\n";
+    } else {
+        $output .= "New content found!\n\n";
+        $output .= "Content preview:\n";
+        $output .= substr($content, 0, 500) . "...\n\n";
+    }
+    
+    $output .= "Previously processed items:\n";
+    foreach ($processed_items as $feed_url => $item) {
+        $output .= "\nFeed: $feed_url\n";
+        $output .= "Last processed: " . date('Y-m-d H:i:s', $item['date']) . "\n";
+        $output .= "Title: " . $item['title'] . "\n";
+    }
+    
+    return $output;
+}
+
+// Add test button to settings page
+add_action('admin_footer', function() {
+    ?>
+    <script type="text/javascript">
+    jQuery(document).ready(function($) {
+        $('.sumai-test-feeds').click(function(e) {
+            e.preventDefault();
+            var $button = $(this);
+            var $results = $('#sumai-test-results');
+            
+            $button.prop('disabled', true);
+            $button.text('Testing...');
+            
+            $.post(ajaxurl, {
+                action: 'sumai_test_feeds',
+                nonce: '<?php echo wp_create_nonce('sumai_test_feeds'); ?>'
+            }, function(response) {
+                $results.html('<pre>' + response + '</pre>');
+                $button.prop('disabled', false);
+                $button.text('Test RSS Feeds');
+            });
+        });
+    });
+    </script>
+    <?php
+});
+
+// Add AJAX handler for testing
+add_action('wp_ajax_sumai_test_feeds', function() {
+    check_ajax_referer('sumai_test_feeds', 'nonce');
+    echo sumai_test_feeds();
+    wp_die();
+});
+
+// Add post creation tracking
+function sumai_track_post_creation($post_id, $success = true) {
+    if ($success) {
+        $total_posts = get_option('sumai_total_posts', 0);
+        update_option('sumai_total_posts', $total_posts + 1);
+        update_option('sumai_last_post_id', $post_id);
+    } else {
+        $failed_posts = get_option('sumai_failed_posts', 0);
+        update_option('sumai_failed_posts', $failed_posts + 1);
+    }
+}
+
+// Add settings save tracking
+function sumai_track_settings_save() {
+    $saves = get_option('sumai_settings_saves', 0);
+    update_option('sumai_settings_saves', $saves + 1);
+}
+
+// Add cron tracking
+function sumai_track_cron_execution() {
+    $last_run = get_option('sumai_last_cron_run', 0);
+    $current_time = time();
+    
+    if ($last_run > 0) {
+        $expected_run = $last_run + DAY_IN_SECONDS;
+        if ($current_time - $expected_run > HOUR_IN_SECONDS) {
+            $missed = get_option('sumai_missed_schedules', 0);
+            update_option('sumai_missed_schedules', $missed + 1);
+        }
+    }
+    
+    update_option('sumai_last_cron_run', $current_time);
 }
