@@ -109,17 +109,29 @@ function sumai_generate_daily_summary($force_fetch = false) {
     error_log('[SUMAI] Generating summary using OpenAI...');
     $result = sumai_summarize_text($content, $context_prompt, $title_prompt);
     
-    // Validate the result
-    if (!is_array($result) || empty($result['content'])) {
-        error_log("[SUMAI] Error: Failed to generate summary - invalid result format");
+    // Validate the result array
+    if (!is_array($result) || !isset($result['title']) || !isset($result['content'])) {
+        error_log("[SUMAI] Error: Invalid result format from summarization");
         return false;
     }
 
     // Create the post
     error_log('[SUMAI] Creating WordPress post...');
+    
+    // Get signature if configured
+    $options = get_option('sumai_settings', array());
+    $signature = isset($options['post_signature']) ? $options['post_signature'] : '';
+    
+    // Append signature to content if present
+    $content = $result['content'];
+    if (!empty($signature) && !empty($content)) {
+        $content .= "\n\n<hr class=\"sumai-signature-divider\" />\n";
+        $content .= $signature;
+    }
+    
     $post_data = array(
         'post_title'    => $result['title'],
-        'post_content'  => $result['content'],
+        'post_content'  => $content,
         'post_status'   => $draft_mode ? 'draft' : 'publish',
         'post_type'     => 'post',
         'post_author'   => get_current_user_id(),
@@ -429,7 +441,7 @@ function sumai_add_admin_menu() {
         'sumai-settings', // Menu slug
         'sumai_render_settings_page', // Function to render the page
         'dashicons-rss', // Icon (using WordPress RSS dashicon)
-        100 // Menu position (numeric value)
+        80 // Menu position (numeric value between 0 and 100)
     );
 }
 add_action('admin_menu', 'sumai_add_admin_menu');
@@ -483,6 +495,42 @@ function sumai_sanitize_settings($input) {
         $sanitized['openai_api_key'] = sanitize_text_field($input['openai_api_key']);
     }
 
+    // Sanitize post signature
+    if (isset($input['post_signature'])) {
+        error_log('Sumai: Raw signature input: ' . $input['post_signature']);
+        
+        // Allow specific HTML tags in signature with expanded attributes
+        $allowed_html = array(
+            'p' => array(
+                'style' => array(),
+                'class' => array()
+            ),
+            'a' => array(
+                'href' => array(),
+                'title' => array(),
+                'target' => array(),
+                'rel' => array(),
+                'style' => array(),
+                'class' => array()
+            ),
+            'br' => array(),
+            'em' => array(
+                'style' => array(),
+                'class' => array()
+            )
+        );
+        
+        // First try with wp_kses_post which allows more HTML
+        $sanitized['post_signature'] = wp_kses_post($input['post_signature']);
+        error_log('Sumai: Signature after wp_kses_post: ' . $sanitized['post_signature']);
+        
+        if (empty($sanitized['post_signature'])) {
+            // Fallback to our custom allowed HTML
+            $sanitized['post_signature'] = wp_kses($input['post_signature'], $allowed_html);
+            error_log('Sumai: Signature after wp_kses fallback: ' . $sanitized['post_signature']);
+        }
+    }
+
     return $sanitized;
 }
 
@@ -529,12 +577,14 @@ function sumai_get_debug_info() {
     $processed_items = get_option('sumai_processed_items', array());
     $debug['feed_history'] = array();
     foreach ($processed_items as $feed_url => $item) {
-        $debug['feed_history'][$feed_url] = array(
-            'last_processed' => date('Y-m-d H:i:s', $item['date']),
-            'last_title' => $item['title'],
-            'item_id' => $item['id'],
-            'last_status' => isset($item['post_status']) ? $item['post_status'] : 'unknown'
-        );
+        if (is_array($item)) {
+            $debug['feed_history'][$feed_url] = array(
+                'last_processed' => isset($item['date']) ? date('Y-m-d H:i:s', $item['date']) : 'unknown',
+                'last_title' => isset($item['title']) ? $item['title'] : 'unknown',
+                'item_id' => isset($item['id']) ? $item['id'] : 'unknown',
+                'last_status' => isset($item['post_status']) ? $item['post_status'] : 'unknown'
+            );
+        }
     }
     
     // Post Creation Stats
@@ -621,12 +671,7 @@ function sumai_get_debug_info() {
 function sumai_render_debug_info($debug_info) {
     ?>
     <div class="card" style="max-width: 1200px; margin-bottom: 20px;">
-        <h2 style="padding: 10px; margin: 0; background: #f0f0f1; border-bottom: 1px solid #c3c4c7;">
-            Debug Information
-            <button type="button" class="button button-small" style="float: right;" onclick="navigator.clipboard.writeText(document.getElementById('debug-content').innerText)">
-                Copy Debug Info
-            </button>
-        </h2>
+        <h2>Debug Information</h2>
         <div id="debug-content" style="padding: 15px;">
             <div class="debug-section">
                 <h3>WordPress Information</h3>
@@ -778,20 +823,22 @@ function sumai_render_settings_page() {
     // Handle settings update
     if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         if (isset($_POST['sumai_settings']) && check_admin_referer('sumai_settings_update')) {
+            error_log('Sumai: Starting settings save...');
             $raw_data = $_POST['sumai_settings'];
-            $debug_messages[] = "Raw form data:\n" . print_r($raw_data, true);
+            error_log('Sumai: Raw settings data: ' . print_r($raw_data, true));
             
             $settings = sumai_sanitize_settings($raw_data);
-            $debug_messages[] = "Sanitized settings:\n" . print_r($settings, true);
+            error_log('Sumai: Sanitized settings: ' . print_r($settings, true));
             
             // Save settings using update_option
             $save_result = update_option('sumai_settings', $settings);
-            $debug_messages[] = "Save result: " . ($save_result ? "Success" : "Failed");
+            error_log('Sumai: Save result: ' . ($save_result ? 'Success' : 'Failed'));
             
-            // Track settings save
-            sumai_track_settings_save();
-            
-            echo '<div class="updated"><p>Settings saved.</p></div>';
+            if ($save_result) {
+                echo '<div class="updated"><p>Settings saved successfully.</p></div>';
+            } else {
+                echo '<div class="error"><p>Failed to save settings. Please try again.</p></div>';
+            }
         }
         // Handle manual generation
         elseif (isset($_POST['sumai_generate_now']) && check_admin_referer('sumai_generate_now')) {
@@ -807,6 +854,7 @@ function sumai_render_settings_page() {
     $title_prompt = isset($options['title_prompt']) ? $options['title_prompt'] : '';
     $draft_mode = isset($options['draft_mode']) ? $options['draft_mode'] : true;
     $openai_api_key = isset($options['openai_api_key']) ? $options['openai_api_key'] : '';
+    $post_signature = isset($options['post_signature']) ? $options['post_signature'] : '';
     
     $debug_messages[] = "Retrieved settings from database:\n" . print_r($options, true);
     
@@ -816,6 +864,7 @@ function sumai_render_settings_page() {
     $title_prompt = isset($options['title_prompt']) ? $options['title_prompt'] : '';
     $draft_mode = isset($options['draft_mode']) ? $options['draft_mode'] : true;
     $openai_api_key = isset($options['openai_api_key']) ? $options['openai_api_key'] : '';
+    $post_signature = isset($options['post_signature']) ? $options['post_signature'] : '';
     
     $debug_messages[] = "Feed URLs for display (" . count($feed_urls) . "):\n" . print_r($feed_urls, true);
     ?>
@@ -872,17 +921,18 @@ function sumai_render_settings_page() {
                         </label>
                     </td>
                 </tr>
+                <tr>
+                    <th scope="row">Post Signature</th>
+                    <td>
+                        <textarea name="sumai_settings[post_signature]" rows="5" style="width: 100%;"><?php echo esc_textarea($post_signature); ?></textarea>
+                        <p class="description">Enter an HTML signature to append to each generated post. You can use HTML tags for formatting.</p>
+                    </td>
+                </tr>
             </table>
             <?php submit_button('Save Settings'); ?>
+            <button type="button" id="test_new_feed_logic" class="button button-secondary" style="margin-left: 10px;">Test New Feed Logic</button>
+            <pre id="test_new_feed_result" style="display:none; margin-top: 10px; padding: 10px; background: #f1f1f1;"></pre>
         </form>
-
-        <!-- Test RSS Feeds -->
-        <div class="card" style="max-width: 800px; margin-top: 20px; padding: 10px;">
-            <h2>Test RSS Feeds</h2>
-            <p>Click the button below to test the RSS feeds and check for new content.</p>
-            <input type="button" id="test-feeds-button" class="button button-secondary" value="Test RSS Feeds">
-            <div id="sumai-test-results" style="margin-top: 10px;"></div>
-        </div>
 
         <!-- Manual Generation Form -->
         <div class="card" style="max-width: 800px; margin-top: 20px; padding: 10px;">
@@ -1047,54 +1097,35 @@ function sumai_test_feeds() {
 
 // Add test button to settings page
 add_action('admin_footer', function() {
+    if (!isset($_GET['page']) || $_GET['page'] !== 'sumai-settings') {
+        return;
+    }
     ?>
     <script type="text/javascript">
     jQuery(document).ready(function($) {
-        // RSS Feed Test
-        $('#test-feeds-button').on('click', function(e) {
-            e.preventDefault();
-            var button = $(this);
-            var originalText = button.val();
-            var results = $('#sumai-test-results');
+        $('#test_new_feed_logic').on('click', function() {
+            var $button = $(this);
+            var $result = $('#test_new_feed_result');
             
-            button.prop('disabled', true).val('Testing...');
-            
-            $.post(ajaxurl, {
-                action: 'sumai_test_feeds',
-                nonce: '<?php echo wp_create_nonce("sumai_test_feeds"); ?>'
-            }, function(response) {
-                results.html('<pre>' + response + '</pre>');
-                button.prop('disabled', false).val(originalText);
-            });
-        });
+            $button.prop('disabled', true).text('Testing...');
+            $result.hide();
 
-        // API Key Test
-        $('#test-api-button').on('click', function(e) {
-            e.preventDefault();
-            var button = $(this);
-            var originalText = button.val();
-            button.prop('disabled', true).val('Testing...');
-            
-            $.post(ajaxurl, {
-                action: 'sumai_test_api'
-            }, function(response) {
-                alert(response);
-                button.prop('disabled', false).val(originalText);
-            });
-        });
-
-        // Hidden API Key Test
-        $('#test-env-api-button').on('click', function(e) {
-            e.preventDefault();
-            var button = $(this);
-            var originalText = button.val();
-            button.prop('disabled', true).val('Testing...');
-            
-            $.post(ajaxurl, {
-                action: 'sumai_test_env_api'
-            }, function(response) {
-                alert(response);
-                button.prop('disabled', false).val(originalText);
+            $.ajax({
+                url: ajaxurl,
+                type: 'POST',
+                data: {
+                    action: 'sumai_test_new_feed_logic',
+                    nonce: '<?php echo wp_create_nonce('sumai_test_new_feed_logic'); ?>'
+                },
+                success: function(response) {
+                    $result.html('<pre>' + response + '</pre>').show();
+                },
+                error: function() {
+                    $result.html('Error testing new feed logic').show();
+                },
+                complete: function() {
+                    $button.prop('disabled', false).text('Test New Feed Logic');
+                }
             });
         });
     });
@@ -1102,168 +1133,27 @@ add_action('admin_footer', function() {
     <?php
 });
 
-// Add AJAX handler for testing
-add_action('wp_ajax_sumai_test_feeds', function() {
-    check_ajax_referer('sumai_test_feeds', 'nonce');
-    echo sumai_test_feeds();
+// Add AJAX handler for new feed logic test
+add_action('wp_ajax_sumai_test_new_feed_logic', function() {
+    check_ajax_referer('sumai_test_new_feed_logic', 'nonce');
+    
+    if (!current_user_can('manage_options')) {
+        wp_send_json_error('Unauthorized');
+    }
+
+    $options = get_option('sumai_settings', array());
+    $feed_urls = isset($options['feed_urls']) ? $options['feed_urls'] : '';
+    
+    $content = sumai_test_feeds($feed_urls);
+    
+    if (empty($content)) {
+        echo "No new content found from feeds.";
+    } else {
+        echo "New content found:\n\n" . esc_html($content);
+    }
+    
     wp_die();
 });
-
-// Add post creation tracking
-function sumai_track_post_creation($post_id, $success = true) {
-    if ($success) {
-        $total_posts = get_option('sumai_total_posts', 0);
-        update_option('sumai_total_posts', $total_posts + 1);
-        update_option('sumai_last_post_id', $post_id);
-    } else {
-        $failed_posts = get_option('sumai_failed_posts', 0);
-        update_option('sumai_failed_posts', $failed_posts + 1);
-    }
-}
-
-// Add settings save tracking
-function sumai_track_settings_save() {
-    $saves = get_option('sumai_settings_saves', 0);
-    update_option('sumai_settings_saves', $saves + 1);
-}
-
-// Add cron tracking
-function sumai_track_cron_execution() {
-    $last_run = get_option('sumai_last_cron_run', 0);
-    $current_time = time();
-    
-    if ($last_run > 0) {
-        $expected_run = $last_run + DAY_IN_SECONDS;
-        if ($current_time - $expected_run > HOUR_IN_SECONDS) {
-            $missed = get_option('sumai_missed_schedules', 0);
-            update_option('sumai_missed_schedules', $missed + 1);
-        }
-    }
-    
-    update_option('sumai_last_cron_run', $current_time);
-}
-
-/* --- Test Function for API Key Retrieval --- */
-function sumai_test_api_key() {
-    $api_key = sumai_get_api_key();
-    if (empty($api_key)) {
-         error_log('[SUMAI] API key not found.');
-    } else {
-         error_log('[SUMAI] API key retrieved: ' . substr($api_key, 0, 4) . '...');
-    }
-    return $api_key;
-}
-
-// Add API test AJAX handler
-add_action('wp_ajax_sumai_test_api', function() {
-    $api_key = sumai_get_api_key();
-    if (empty($api_key)) {
-        wp_send_json('OpenAI API key not found. Please check your settings or .env file.');
-    } else {
-        $first_chars = substr($api_key, 0, 4);
-        wp_send_json("OpenAI API key found (starts with: {$first_chars}...)");
-    }
-});
-
-// Add .env API test AJAX handler
-add_action('wp_ajax_sumai_test_env_api', function() {
-    $env_path = plugin_dir_path(__FILE__) . '.env';
-    $api_key = '';
-    
-    if (file_exists($env_path)) {
-        $env_content = file_get_contents($env_path);
-        foreach (explode("\n", $env_content) as $line) {
-            if (strpos($line, 'OPENAI_API_KEY=') === 0) {
-                $api_key = trim(substr($line, strlen('OPENAI_API_KEY=')));
-                break;
-            }
-        }
-    }
-    
-    if (empty($api_key)) {
-        wp_send_json('OpenAI API key not found in .env file. Please check your .env file in the plugin directory.');
-    } else {
-        $first_chars = substr($api_key, 0, 4);
-        wp_send_json("OpenAI API key found in .env file (starts with: {$first_chars}...)");
-    }
-});
-
-// Handle the manual generation button submission
-add_action('admin_post_sumai_generate_now', function() {
-    if (!current_user_can('manage_options')) {
-        wp_die('Unauthorized');
-    }
-
-    check_admin_referer('sumai_generate_now');
-    
-    $result = sumai_generate_daily_summary(true);
-    
-    if ($result) {
-        $redirect_url = add_query_arg(
-            array(
-                'page' => 'sumai-settings',
-                'message' => 'summary_generated',
-                'post_id' => $result
-            ),
-            admin_url('admin.php')
-        );
-    } else {
-        $redirect_url = add_query_arg(
-            array(
-                'page' => 'sumai-settings',
-                'error' => 'generation_failed'
-            ),
-            admin_url('admin.php')
-        );
-    }
-    
-    wp_redirect($redirect_url);
-    exit;
-});
-
-// Add admin notice handler
-add_action('admin_notices', function() {
-    if (!isset($_GET['page']) || $_GET['page'] !== 'sumai-settings') {
-        return;
-    }
-
-    if (isset($_GET['message']) && $_GET['message'] === 'summary_generated') {
-        $post_id = isset($_GET['post_id']) ? intval($_GET['post_id']) : 0;
-        $edit_link = $post_id ? get_edit_post_link($post_id) : '';
-        $message = 'Summary post has been generated. ';
-        if ($edit_link) {
-            $message .= sprintf('<a href="%s">View/Edit Post</a>', esc_url($edit_link));
-        }
-        echo '<div class="notice notice-success is-dismissible"><p>' . $message . '</p></div>';
-    }
-
-    if (isset($_GET['error']) && $_GET['error'] === 'generation_failed') {
-        echo '<div class="notice notice-error is-dismissible"><p>Failed to generate summary. Check error logs for details.</p></div>';
-    }
-});
-
-/* --- Test Function for .env API Key --- */
-function sumai_test_env_api_key() {
-    $env_path = plugin_dir_path(__FILE__) . '.env';
-    $api_key = '';
-    
-    if (file_exists($env_path)) {
-        $env_content = file_get_contents($env_path);
-        foreach (explode("\n", $env_content) as $line) {
-            if (strpos($line, 'OPENAI_API_KEY=') === 0) {
-                $api_key = trim(substr($line, strlen('OPENAI_API_KEY=')));
-                break;
-            }
-        }
-    }
-    
-    if (empty($api_key)) {
-        error_log('[SUMAI] API key not found in .env file');
-    } else {
-        error_log('[SUMAI] API key found in .env file: ' . substr($api_key, 0, 4) . '...');
-    }
-    return $api_key;
-}
 
 /**
  * Fetches content from a single feed URL
