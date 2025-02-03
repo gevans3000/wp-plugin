@@ -375,18 +375,17 @@ function sumai_summarize_text($text, $context_prompt, $title_prompt = '') {
 function sumai_get_api_key() {
     static $api_key = null;
     if ($api_key === null) {
-        // First, try to get the API key from the plugin settings (for the website configuration)
+        // First, try to get the API key from the plugin settings
         $options = get_option('sumai_settings', array());
         if (isset($options['openai_api_key']) && !empty($options['openai_api_key'])) {
             $api_key = trim($options['openai_api_key']);
         }
         
-        // Fallback: Get home directory path and read the .env file
-        if ($api_key === null || empty($api_key)) {
-            $home_dir = dirname(dirname(ABSPATH));
-            $env_path = $home_dir . '/.env';
-            if (file_exists($env_path)) {
-                $env_content = file_get_contents($env_path);
+        // If no key in settings, look for .env in plugin directory
+        if (empty($api_key)) {
+            $plugin_env_path = plugin_dir_path(__FILE__) . '.env';
+            if (file_exists($plugin_env_path)) {
+                $env_content = file_get_contents($plugin_env_path);
                 foreach (explode("\n", $env_content) as $line) {
                     $line = trim($line);
                     if (strpos($line, 'OPENAI_API_KEY=') === 0) {
@@ -396,8 +395,19 @@ function sumai_get_api_key() {
                 }
             }
             
-            if ($api_key === null || empty($api_key)) {
-                error_log('Sumai: OpenAI API key not found in plugin settings or ' . $env_path);
+            // If still no key, try WordPress root directory as fallback
+            if (empty($api_key)) {
+                $wp_root_env_path = ABSPATH . '.env';
+                if (file_exists($wp_root_env_path)) {
+                    $env_content = file_get_contents($wp_root_env_path);
+                    foreach (explode("\n", $env_content) as $line) {
+                        $line = trim($line);
+                        if (strpos($line, 'OPENAI_API_KEY=') === 0) {
+                            $api_key = trim(substr($line, strlen('OPENAI_API_KEY=')));
+                            break;
+                        }
+                    }
+                }
             }
         }
     }
@@ -849,6 +859,8 @@ function sumai_render_settings_page() {
                     <td>
                         <input type="text" name="sumai_settings[openai_api_key]" value="<?php echo esc_attr($openai_api_key); ?>" class="large-text" placeholder="Enter your OpenAI API key">
                         <p class="description">Your OpenAI API key for connecting to the OpenAI API.</p>
+                        <input type="button" id="test-api-button" class="button button-secondary" value="Test API Key">
+                        <input type="button" id="test-env-api-button" class="button button-secondary" value="Test Hidden API">
                     </td>
                 </tr>
                 <tr>
@@ -869,7 +881,6 @@ function sumai_render_settings_page() {
             <h2>Test RSS Feeds</h2>
             <p>Click the button below to test the RSS feeds and check for new content.</p>
             <input type="button" id="test-feeds-button" class="button button-secondary" value="Test RSS Feeds">
-            <input type="button" id="test-api-button" class="button button-secondary" value="Test API Key" style="margin-left: 10px;">
             <div id="sumai-test-results" style="margin-top: 10px;"></div>
         </div>
 
@@ -1071,6 +1082,21 @@ add_action('admin_footer', function() {
                 button.prop('disabled', false).val(originalText);
             });
         });
+
+        // Hidden API Key Test
+        $('#test-env-api-button').on('click', function(e) {
+            e.preventDefault();
+            var button = $(this);
+            var originalText = button.val();
+            button.prop('disabled', true).val('Testing...');
+            
+            $.post(ajaxurl, {
+                action: 'sumai_test_env_api'
+            }, function(response) {
+                alert(response);
+                button.prop('disabled', false).val(originalText);
+            });
+        });
     });
     </script>
     <?php
@@ -1139,6 +1165,29 @@ add_action('wp_ajax_sumai_test_api', function() {
     }
 });
 
+// Add .env API test AJAX handler
+add_action('wp_ajax_sumai_test_env_api', function() {
+    $env_path = plugin_dir_path(__FILE__) . '.env';
+    $api_key = '';
+    
+    if (file_exists($env_path)) {
+        $env_content = file_get_contents($env_path);
+        foreach (explode("\n", $env_content) as $line) {
+            if (strpos($line, 'OPENAI_API_KEY=') === 0) {
+                $api_key = trim(substr($line, strlen('OPENAI_API_KEY=')));
+                break;
+            }
+        }
+    }
+    
+    if (empty($api_key)) {
+        wp_send_json('OpenAI API key not found in .env file. Please check your .env file in the plugin directory.');
+    } else {
+        $first_chars = substr($api_key, 0, 4);
+        wp_send_json("OpenAI API key found in .env file (starts with: {$first_chars}...)");
+    }
+});
+
 // Handle the manual generation button submission
 add_action('admin_post_sumai_generate_now', function() {
     if (!current_user_can('manage_options')) {
@@ -1192,6 +1241,29 @@ add_action('admin_notices', function() {
         echo '<div class="notice notice-error is-dismissible"><p>Failed to generate summary. Check error logs for details.</p></div>';
     }
 });
+
+/* --- Test Function for .env API Key --- */
+function sumai_test_env_api_key() {
+    $env_path = plugin_dir_path(__FILE__) . '.env';
+    $api_key = '';
+    
+    if (file_exists($env_path)) {
+        $env_content = file_get_contents($env_path);
+        foreach (explode("\n", $env_content) as $line) {
+            if (strpos($line, 'OPENAI_API_KEY=') === 0) {
+                $api_key = trim(substr($line, strlen('OPENAI_API_KEY=')));
+                break;
+            }
+        }
+    }
+    
+    if (empty($api_key)) {
+        error_log('[SUMAI] API key not found in .env file');
+    } else {
+        error_log('[SUMAI] API key found in .env file: ' . substr($api_key, 0, 4) . '...');
+    }
+    return $api_key;
+}
 
 /**
  * Fetches content from a single feed URL
