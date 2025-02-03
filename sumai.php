@@ -129,8 +129,11 @@ function sumai_generate_daily_summary($force_fetch = false) {
         $content .= $signature;
     }
     
+    // Clean the title by removing quotes
+    $clean_title = str_replace(array('"', "'", "\u201c", "\u201d", "\u2018", "\u2019"), '', $result['title']);
+    
     $post_data = array(
-        'post_title'    => $result['title'],
+        'post_title'    => $clean_title,
         'post_content'  => $content,
         'post_status'   => $draft_mode ? 'draft' : 'publish',
         'post_type'     => 'post',
