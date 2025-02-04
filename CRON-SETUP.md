@@ -1,46 +1,75 @@
-# Setting Up Server Cron for WordPress
+# Cron Job Setup Guide for Sumai Plugin
 
-This guide will help you set up a proper server-level cron job for your WordPress site.
+## Why This Matters
+Cron jobs ensure your daily summaries generate automatically. Without proper setup:
+⚠️ Summaries won't create themselves
+⚠️ Manual intervention required
+⚠️ Plugin features won't work as intended
 
-## Step 1: Upload Files
-1. Upload `wp-cron-trigger.php` to your WordPress plugins directory
-2. Upload `disable-wp-cron.php` to the same location
+## Step 1: File Preparation
+1️⃣ **Download** these files from the plugin package:
+- `wp-cron-trigger.php`
+- `disable-wp-cron.php`
 
-## Step 2: Disable WordPress Default Cron
-1. Navigate to your WordPress plugins directory
-2. Run: `php disable-wp-cron.php`
-3. This will modify your wp-config.php and create a backup
+2️⃣ **Upload** both files to:
+`your-site-root/wp-content/plugins/sumai/`
 
-## Step 3: Set Up Server Cron Job
-1. Log into your hosting control panel (cPanel)
-2. Find "Cron Jobs" or "Scheduled Tasks"
-3. Add a new cron job with these settings:
-
-### For cPanel:
-- **Common Settings**: Select "Every 5 minutes"
-- **Command**: `php /home/tzjwuepq/public_html/wp-content/plugins/sumai/wp-cron-trigger.php >/dev/null 2>&1`
-
-### For Direct Server Access:
+## Step 2: Disable WordPress Cron (Required!)
 ```bash
-*/5 * * * * php /home/tzjwuepq/public_html/wp-content/plugins/sumai/wp-cron-trigger.php >/dev/null 2>&1
+php disable-wp-cron.php
+```
+✅ Creates `wp-config.php.backup`
+✅ Modifies `wp-config.php`
+✅ Confirmation message will appear
+
+## Step 3: Server Cron Setup
+
+### Option A: cPanel (Most Common)
+1. Log in to your hosting account
+2. Find "Cron Jobs" (usually under "Advanced")
+3. Create new job with these settings:
+
+| Field          | Value                                  |
+|----------------|----------------------------------------|
+| Minute         | */5                                    |
+| Command        | `php /path/to/wp-cron-trigger.php`     |
+
+🛠 **Path Finder**:
+```
+Your Site Root: /home/{username}/public_html/
+Full Path: /home/{username}/public_html/wp-content/plugins/sumai/wp-cron-trigger.php
 ```
 
-## Verification
-1. Go to your Sumai plugin settings page
-2. Check the "Debug Information" section
-3. You should see your scheduled posts listed
-4. Wait 5-10 minutes and refresh to ensure the cron job is running
+### Option B: SSH (Advanced Users)
+```bash
+crontab -e
+```
+Add this line:
+```
+*/5 * * * * php /path/to/wp-cron-trigger.php >/dev/null 2>&1
+```
 
-## Troubleshooting
-If posts aren't being created:
-1. Check your server's error log
-2. Ensure the paths in the cron command match your server setup
-3. Verify PHP has permission to execute the script
-4. Check that your RSS feeds are accessible
-5. Verify your OpenAI API key is valid
+## Verification Checklist
+1. Wait 15 minutes
+2. Visit Sumai → Settings → Debug Info
+3. Look for "Last cron execution" timestamp
+4. Check for new summaries in your posts list
 
-## Support
-If you need help, please:
-1. Check the plugin's error log in wp-content/uploads/sumai-logs.log
-2. Contact your hosting provider if you need help setting up cron jobs
-3. Ensure your hosting plan supports cron jobs
+## Common Issues & Fixes
+
+❌ "Cron job not running"
+➡️ Verify path in cron command
+➡️ Check file permissions (644 for PHP files)
+➡️ Test PHP CLI version: `php -v`
+
+❌ "Permission denied"
+➡️ Contact host about cron access
+➡️ Ask about "WP-CLI" alternatives
+
+## Support Resources
+► [Video Walkthrough](https://example.com/cron-setup) (3 min)
+► Host-Specific Guides:
+- SiteGround: https://sg.sg/cron-guide
+- Bluehost: https://bh.io/cron-help
+
+💡 Pro Tip: Set up [Health Check Plugin](https://wordpress.org/plugins/health-check/) to monitor cron status!
