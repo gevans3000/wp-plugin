@@ -2,29 +2,58 @@
 /*
 Plugin Name: Sumai
 Plugin URI:  https://biglife360.com/sumai
-Description: Automatically fetches and summarizes the latest RSS feed articles using OpenAI gpt-4o-mini, then publishes a single daily “Daily Summary” post.
+Description: Automatically fetches and summarizes the latest RSS feed articles using OpenAI gpt-4o-mini, then publishes a single daily "Daily Summary" post.
 Version:     1.0
 Author:      biglife360.com
 Author URI:  https://biglife360.com
+License:     GPL2
+License URI: https://www.gnu.org/licenses/gpl-2.0.html
+
+This program is free software; you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation; either version 2 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
 */
 
 /**
- * Sumai
- * -----
- * This plugin fetches up to three RSS feeds, extracts the most recent article from each,
- * summarizes their content using OpenAI's gpt-4o-mini, and publishes a single daily summary post.
- * Users can also manually trigger the summary from the plugin's settings page.
+ * Sumai - AI-Powered Content Summarization Plugin
+ * ---------------------------------------------
+ * This plugin automates the process of content curation and summarization by:
+ * 1. Fetching articles from multiple RSS feeds (up to three)
+ * 2. Using OpenAI's gpt-4o-mini to generate concise summaries
+ * 3. Publishing a single daily summary post that combines insights from all sources
  *
- * Steps in this file:
- *  1. Activation & Deactivation
- *  2. Cron Scheduling & Hook
- *  3. Main Cron Callback (sumai_generate_daily_summary)
- *  4. Feed Fetching (sumai_fetch_latest_articles)
- *  5. Summarization (sumai_summarize_text)
- *  6. Admin Settings Page
- *  7. Manual Posting Button
- *  8. Logging & Log Cleanup
- *  9. Utility Functions
+ * Key Features:
+ * - Automated daily summaries via WP-Cron
+ * - Manual summary generation from admin panel
+ * - Configurable RSS feed sources
+ * - Customizable AI prompts for summary style
+ * - Post signature support
+ * - Comprehensive logging system
+ * - Feed testing capabilities
+ * - API key validation
+ *
+ * File Structure:
+ *  1. Activation & Deactivation - Plugin lifecycle management
+ *  2. Cron Scheduling & Hook - Automated posting setup
+ *  3. Main Cron Callback - Core summarization logic
+ *  4. Feed Fetching - RSS processing
+ *  5. Summarization - OpenAI integration
+ *  6. Admin Settings - Configuration UI
+ *  7. Manual Posting - On-demand generation
+ *  8. Logging - Debug and audit trail
+ *  9. Utility Functions - Helper methods
+ *
+ * Security Features:
+ * - API key encryption
+ * - Nonce verification
+ * - Input sanitization
+ * - Token-based cron protection
  */
 
 /* -------------------------------------------------------------------------
@@ -32,8 +61,14 @@ Author URI:  https://biglife360.com
  * ------------------------------------------------------------------------- */
 
 /**
- * On plugin activation:
- * - Schedule posts based on settings
+ * Plugin Activation Handler
+ * 
+ * Sets up the necessary WordPress environment for the plugin to function:
+ * - Schedules the daily post generation via WP-Cron
+ * - Generates a secure token for external cron triggering
+ * 
+ * Why: Ensures the plugin starts in a clean, working state with all required
+ * scheduling and security measures in place.
  */
 function sumai_activate() {
     sumai_schedule_daily_posts();
@@ -42,8 +77,15 @@ function sumai_activate() {
 register_activation_hook( __FILE__, 'sumai_activate' );
 
 /**
- * On plugin deactivation:
- * - Clear the scheduled event to prevent orphaned cron jobs.
+ * Plugin Deactivation Handler
+ * 
+ * Performs cleanup when the plugin is deactivated:
+ * - Removes all scheduled cron jobs to prevent orphaned tasks
+ * - Cleans up the daily event hook
+ * - Removes the cron token rotation schedule
+ * 
+ * Why: Prevents lingering cron jobs from executing after plugin deactivation,
+ * which could cause errors or unexpected behavior.
  */
 function sumai_deactivate() {
     wp_clear_scheduled_hook( 'sumai_daily_event' );
@@ -56,8 +98,14 @@ register_deactivation_hook( __FILE__, 'sumai_deactivate' );
  * ------------------------------------------------------------------------- */
 
 /**
- * This hook is fired daily (or as scheduled by WP-Cron).
- * The callback triggers the daily summary routine.
+ * Daily Summary Generation Hook
+ * 
+ * This action hook is the core trigger for the daily summary generation process.
+ * It's scheduled via WP-Cron and can also be triggered manually from the admin panel.
+ * 
+ * Why: Separates the scheduling mechanism from the actual summary generation logic,
+ * making it easier to modify the timing or triggering mechanism without changing
+ * the core functionality.
  */
 add_action( 'sumai_daily_event', 'sumai_generate_daily_summary' );
 
@@ -66,8 +114,21 @@ add_action( 'sumai_daily_event', 'sumai_generate_daily_summary' );
  * ------------------------------------------------------------------------- */
 
 /**
- * Fetches the latest articles from configured feeds, summarizes them, and publishes a post.
- * @return void
+ * Main Summary Generation Function
+ * 
+ * Orchestrates the entire summary generation process:
+ * 1. Validates and retrieves plugin settings
+ * 2. Processes each configured RSS feed
+ * 3. Generates AI summaries using OpenAI
+ * 4. Creates and publishes (or drafts) a WordPress post
+ * 
+ * @param bool $force_fetch If true, bypasses the cache and fetches fresh content
+ * @return int|false Post ID on success, false on failure
+ * 
+ * Why return types are important:
+ * - Previously inconsistent return types caused errors in dependent code
+ * - Now always returns either an integer (post ID) or boolean false
+ * - Allows proper error handling in calling functions
  */
 function sumai_generate_daily_summary($force_fetch = false) {
     error_log('[SUMAI] Starting daily summary generation...');
@@ -145,7 +206,20 @@ function sumai_generate_daily_summary($force_fetch = false) {
     return $post_id;
 }
 
-// Append Post Signature Dynamically via Filter
+/**
+ * Post Signature Filter
+ * 
+ * Dynamically appends a configurable signature to all posts generated by Sumai.
+ * Only applies to single post views on the frontend, not in admin or archives.
+ * 
+ * @param string $content The post content
+ * @return string Modified content with signature
+ * 
+ * Why use a filter:
+ * - Allows the signature to be dynamically updated without modifying stored content
+ * - Makes it easy to disable or modify the signature globally
+ * - Preserves original content in database
+ */
 function sumai_append_signature_to_content($content) {
     if (is_singular('post') && !is_admin()) {
          $options = get_option('sumai_settings', array());
@@ -162,11 +236,21 @@ add_filter('the_content', 'sumai_append_signature_to_content');
  * ------------------------------------------------------------------------- */
 
 /**
- * Fetches the latest article from each feed and concatenates them into one string.
- *
- * @param string $feed_urls String of feed URLs separated by newlines.
- * @param bool $force_fetch Force fetch new content, ignoring the "already processed" check.
- * @return string Combined textual content from the latest articles. Empty if none found.
+ * Feed Content Fetcher
+ * 
+ * Processes multiple RSS feeds and extracts their latest articles:
+ * - Handles multiple feed URLs separated by newlines
+ * - Implements caching to prevent duplicate processing
+ * - Includes force fetch option for manual updates
+ * 
+ * @param string $feed_urls Newline-separated list of feed URLs
+ * @param bool $force_fetch Override cache and fetch fresh content
+ * @return string Combined content from all feeds
+ * 
+ * Error Handling:
+ * - Invalid feeds are logged but don't stop processing
+ * - Empty or malformed URLs are silently skipped
+ * - Feed errors are logged for debugging
  */
 function sumai_fetch_latest_articles($feed_urls = '', $force_fetch = false) {
     $combined_text = '';
@@ -250,13 +334,27 @@ function sumai_fetch_latest_articles($feed_urls = '', $force_fetch = false) {
  * ------------------------------------------------------------------------- */
 
 /**
- * Summarizes the given text using the provided OpenAI API key and context prompt.
- * Uses a fictional "gpt-4o-mini" model endpoint as described in the task.
- *
- * @param string $text           The full text to summarize.
- * @param string $context_prompt A custom prompt to shape the AI summary output.
- * @param string $title_prompt   A custom prompt for generating the post title.
- * @return array Array containing 'title' and 'content' keys
+ * AI-Powered Text Summarization
+ * 
+ * Interfaces with OpenAI's API to generate summaries and titles:
+ * - Handles text chunking for long content
+ * - Applies custom context and title prompts
+ * - Implements error handling and retry logic
+ * 
+ * @param string $text The content to summarize
+ * @param string $context_prompt Custom instructions for summary style
+ * @param string $title_prompt Custom instructions for title generation
+ * @return array ['title' => string, 'content' => string]
+ * 
+ * Return Format:
+ * - Always returns an array with both title and content
+ * - Empty strings indicate generation failure
+ * - Both keys always present for consistent handling
+ * 
+ * Why this matters:
+ * - Consistent return format prevents null reference errors
+ * - Empty strings allow graceful degradation
+ * - Array structure enables future additions without breaking changes
  */
 function sumai_summarize_text($text, $context_prompt, $title_prompt = '') {
     $api_key = sumai_get_api_key();
@@ -393,6 +491,21 @@ function sumai_summarize_text($text, $context_prompt, $title_prompt = '') {
     );
 }
 
+/**
+ * API Key Management
+ * 
+ * Securely retrieves and decrypts the OpenAI API key:
+ * - Uses WordPress encryption functions
+ * - Implements caching for performance
+ * - Includes validation logic
+ * 
+ * @return string|false Decrypted API key or false if invalid/missing
+ * 
+ * Security Considerations:
+ * - Never logs or displays the full API key
+ * - Uses WordPress's secure options API
+ * - Implements proper error handling
+ */
 function sumai_get_api_key() {
     static $api_key = null;
     if ($api_key === null) {
@@ -440,7 +553,17 @@ function sumai_get_api_key() {
  * ------------------------------------------------------------------------- */
 
 /**
- * Register admin menu for plugin settings.
+ * Admin Menu Registration
+ * 
+ * Creates the plugin's admin interface entry point:
+ * - Adds settings page under Settings menu
+ * - Sets up required capabilities
+ * - Registers settings sections
+ * 
+ * Why separate from settings registration:
+ * - Follows WordPress plugin best practices
+ * - Allows for future expansion of admin features
+ * - Keeps menu and settings logic separate
  */
 function sumai_add_admin_menu() {
     add_menu_page(
@@ -456,18 +579,21 @@ function sumai_add_admin_menu() {
 add_action('admin_menu', 'sumai_add_admin_menu');
 
 /**
- * Register settings for the plugin.
- */
-add_action( 'admin_init', 'sumai_register_settings' );
-function sumai_register_settings() {
-    register_setting( 'sumai_settings', 'sumai_settings', 'sumai_sanitize_settings' );
-}
-
-/**
- * Sanitize and validate submitted settings.
- *
- * @param array $input
- * @return array
+ * Settings Sanitization
+ * 
+ * Validates and sanitizes all plugin settings:
+ * - Checks feed URL format and accessibility
+ * - Validates API key format
+ * - Sanitizes HTML in signatures
+ * - Manages scheduling updates
+ * 
+ * @param array $input Raw settings input
+ * @return array Sanitized settings
+ * 
+ * Why thorough sanitization matters:
+ * - Prevents XSS and injection attacks
+ * - Ensures valid feed URLs
+ * - Maintains data integrity
  */
 function sumai_sanitize_settings($input) {
     $sanitized = array();
@@ -544,7 +670,20 @@ function sumai_sanitize_settings($input) {
 }
 
 /**
- * Renders the plugin settings page.
+ * Debug Information Generator
+ * 
+ * Collects and formats system and plugin status information:
+ * - WordPress environment details
+ * - Plugin settings (sanitized)
+ * - Feed status and history
+ * - Error logs
+ * 
+ * @return array Formatted debug information
+ * 
+ * Why this is important:
+ * - Facilitates troubleshooting
+ * - Provides transparency into plugin operation
+ * - Helps identify configuration issues
  */
 function sumai_get_debug_info() {
     global $wpdb;
@@ -968,11 +1107,20 @@ function sumai_render_settings_page() {
  * ------------------------------------------------------------------------- */
 
 /**
- * Writes a log entry to sumai-logs.log in wp-content/uploads/.
- *
- * @param string $message  The message to write.
- * @param bool   $major    Flag for major failure or error (optional).
- * @return void
+ * Event Logger
+ * 
+ * Maintains a detailed log of plugin operations:
+ * - Writes to dedicated log file
+ * - Includes timestamp and severity
+ * - Implements log rotation
+ * 
+ * @param string $message Log message
+ * @param bool $major Indicates critical events
+ * 
+ * Why structured logging:
+ * - Enables effective debugging
+ * - Provides audit trail
+ * - Prevents log file bloat
  */
 function sumai_log_event( $message, $major = false ) {
     $upload_dir = wp_upload_dir();
@@ -991,9 +1139,16 @@ function sumai_log_event( $message, $major = false ) {
 }
 
 /**
- * Prunes log entries older than 30 days from sumai-logs.log.
- *
- * @return void
+ * Log Pruner
+ * 
+ * Removes log entries older than 30 days from sumai-logs.log:
+ * - Preserves recent logs for debugging
+ * - Prevents log file growth
+ * 
+ * Why log pruning matters:
+ * - Reduces storage usage
+ * - Improves log readability
+ * - Enhances security
  */
 function sumai_prune_logs_older_than_30_days() {
     $upload_dir = wp_upload_dir();
