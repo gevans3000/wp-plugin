@@ -1224,3 +1224,53 @@ function sumai_fetch_feed_content($url, $force_fetch = false) {
     error_log("[SUMAI] Successfully fetched and cached content from: " . $url);
     return $content;
 }
+
+// AJAX Callback for 'Test Hidden API' button
+add_action('wp_ajax_sumai_test_hidden_api', 'sumai_test_hidden_api_callback');
+function sumai_test_hidden_api_callback() {
+    $env_path = plugin_dir_path(__FILE__) . '.env';
+    if (file_exists($env_path)) {
+        $env_content = file_get_contents($env_path);
+        if (strpos($env_content, 'OPENAI_API_KEY=') !== false) {
+            wp_send_json_success(array('message' => '.env file found with OPENAI_API_KEY.'));
+        } else {
+            wp_send_json_error(array('message' => '.env file found but OPENAI_API_KEY not set.'));
+        }
+    } else {
+        wp_send_json_error(array('message' => '.env file not found in plugin directory.'));
+    }
+    wp_die();
+}
+
+// Enqueue inline JavaScript for 'Test Hidden API' button on the Sumai Settings page
+add_action('admin_footer', 'sumai_test_hidden_api_script');
+function sumai_test_hidden_api_script() {
+    $screen = get_current_screen();
+    if ($screen && $screen->id === 'toplevel_page_sumai-settings') { ?>
+        <script type="text/javascript">
+        jQuery(document).ready(function($) {
+            console.log('Sumai Test Hidden API script loaded.');
+            $('#test-env-api-button').on('click', function(e) {
+                e.preventDefault();
+                console.log('Test Hidden API button clicked.');
+                $.ajax({
+                    url: ajaxurl,
+                    type: 'POST',
+                    dataType: 'json',
+                    data: {
+                        action: 'sumai_test_hidden_api'
+                    },
+                    success: function(response) {
+                        var message = response.success ? 'Success: ' + response.data.message : 'Error: ' + response.data.message;
+                        $('#test-env-api-button').next('#test-env-api-result').remove();
+                        $('#test-env-api-button').after('<div id="test-env-api-result" style="margin-top:10px;">' + message + '</div>');
+                    },
+                    error: function(xhr, status, error) {
+                        alert('AJAX error: ' + error);
+                    }
+                });
+            });
+        });
+        </script>
+    <?php }
+}
