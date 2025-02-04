@@ -79,6 +79,8 @@ function sumai_generate_daily_summary($force_fetch = false) {
     $title_prompt = isset($options['title_prompt']) ? $options['title_prompt'] : '';
     // Force draft mode for manual summary generation
     $draft_mode = true;
+    // Store post signature from options for later reuse
+    $signature = isset($options['post_signature']) ? $options['post_signature'] : '';
 
     // Basic validation
     if (empty($feed_urls)) {
@@ -118,16 +120,8 @@ function sumai_generate_daily_summary($force_fetch = false) {
     // Create the post
     error_log('[SUMAI] Creating WordPress post...');
     
-    // Get signature if configured
-    $options = get_option('sumai_settings', array());
-    $signature = isset($options['post_signature']) ? $options['post_signature'] : '';
-    
-    // Append signature to content if present
+    // Use generated content as is; signature will be appended dynamically via filter
     $content = $result['content'];
-    if (!empty($signature) && !empty($content)) {
-        $content .= "\n\n<hr class=\"sumai-signature-divider\" />\n";
-        $content .= $signature;
-    }
     
     // Clean the title by removing quotes
     $clean_title = str_replace(array('"', "'", "\u201c", "\u201d", "\u2018", "\u2019"), '', $result['title']);
@@ -150,6 +144,18 @@ function sumai_generate_daily_summary($force_fetch = false) {
     error_log('[SUMAI] Summary post created successfully');
     return $post_id;
 }
+
+// Append Post Signature Dynamically via Filter
+function sumai_append_signature_to_content($content) {
+    if (is_singular('post') && !is_admin()) {
+         $options = get_option('sumai_settings', array());
+         if (!empty($options['post_signature'])) {
+              $content .= "\n\n<hr class=\"sumai-signature-divider\" />\n" . $options['post_signature'];
+         }
+    }
+    return $content;
+}
+add_filter('the_content', 'sumai_append_signature_to_content');
 
 /* -------------------------------------------------------------------------
  * 4. FEED FETCHING (sumai_fetch_latest_articles)
