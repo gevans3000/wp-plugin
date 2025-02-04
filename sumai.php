@@ -915,7 +915,7 @@ function sumai_render_settings_page() {
                 <tr>
                     <th scope="row">OpenAI API Key</th>
                     <td>
-                        <input type="text" name="sumai_settings[openai_api_key]" value="<?php echo esc_attr($openai_api_key); ?>" class="large-text" placeholder="Enter your OpenAI API key">
+                        <input type="text" id="api-key-input" name="sumai_settings[openai_api_key]" value="<?php echo esc_attr($openai_api_key); ?>" class="large-text" placeholder="Enter your OpenAI API key">
                         <p class="description">Your OpenAI API key for connecting to the OpenAI API.</p>
                         <input type="button" id="test-api-button" class="button button-secondary" value="Test API Key">
                         <input type="button" id="test-env-api-button" class="button button-secondary" value="Test Hidden API">
@@ -1267,6 +1267,52 @@ function sumai_test_hidden_api_script() {
                     },
                     error: function(xhr, status, error) {
                         alert('AJAX error: ' + error);
+                    }
+                });
+            });
+        });
+        </script>
+    <?php }
+}
+
+// AJAX callback for testing the API key entered in settings
+function sumai_test_api_key_callback() {
+    check_ajax_referer('sumai_test_api_key', 'nonce');
+
+    if (!current_user_can('manage_options')) {
+        wp_send_json_error('Unauthorized');
+    }
+
+    $provided_key = isset($_POST['openai_api_key']) ? trim($_POST['openai_api_key']) : '';
+    if (empty($provided_key)) {
+        wp_send_json_error(array('message' => 'API key is empty.'));
+    } else {
+        wp_send_json_success(array('message' => 'API key is valid.'));
+    }
+    wp_die();
+}
+
+add_action('wp_ajax_sumai_test_api_key', 'sumai_test_api_key_callback');
+
+// Enqueue inline JavaScript for handling the Test API Key button click
+add_action('admin_footer', 'sumai_test_api_key_script');
+function sumai_test_api_key_script() {
+    $screen = get_current_screen();
+    if ($screen && $screen->id === 'toplevel_page_sumai-settings') { ?>
+        <script type="text/javascript">
+        jQuery(document).ready(function($) {
+            $('#test-api-button').on('click', function(e) {
+                e.preventDefault();
+                var apiKey = $('#api-key-input').val();
+                $.post(ajaxurl, {
+                    action: 'sumai_test_api_key',
+                    openai_api_key: apiKey,
+                    nonce: '<?php echo wp_create_nonce('sumai_test_api_key'); ?>'
+                }, function(response) {
+                    if(response.success) {
+                        alert(response.data.message);
+                    } else {
+                        alert(response.data.message);
                     }
                 });
             });
