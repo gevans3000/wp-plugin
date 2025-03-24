@@ -30,8 +30,8 @@ require_once(dirname(__FILE__) . '/../../../wp-load.php');
 
 // Verify the security token
 // The token is generated during plugin activation and stored in WordPress options
-$stored_token = get_option('sumai_cron_token', wp_generate_password(32));
-if (!empty($_REQUEST['token']) && hash_equals($stored_token, sanitize_key($_REQUEST['token']))) {
+$stored_token = get_option('sumai_cron_token', '');
+if (!empty($_REQUEST['token']) && !empty($stored_token) && hash_equals($stored_token, $_REQUEST['token'])) {
     // Set DOING_CRON constant to prevent concurrent cron runs
     if ( !defined('DOING_CRON') ) {
         define('DOING_CRON', true);

@@ -3,7 +3,7 @@
 Plugin Name: Sumai
 Plugin URI:  https://biglife360.com/sumai
 Description: Automatically fetches and summarizes the latest RSS feed articles using OpenAI gpt-4o-mini, then publishes a single daily "Daily Summary" post.
-Version:     1.0.3
+Version:     1.0.4
 Author:      biglife360.com
 Author URI:  https://biglife360.com
 License:     GPL2
@@ -72,7 +72,9 @@ GNU General Public License for more details.
  */
 function sumai_activate() {
     sumai_schedule_daily_posts();
-    update_option('sumai_cron_token', wp_generate_password(32));
+    // Generate a URL-safe token without shell-problematic characters
+    $safe_token = bin2hex(random_bytes(16)); // Creates a hexadecimal string (0-9, a-f)
+    update_option('sumai_cron_token', $safe_token);
 }
 register_activation_hook( __FILE__, 'sumai_activate' );
 
@@ -588,7 +590,9 @@ function sumai_sanitize_settings($input) {
     }
 
     // Update the cron token (generate a new one)
-    $sanitized_input['cron_token'] = wp_generate_password(32);
+    // Generate a URL-safe token without shell-problematic characters
+    $safe_token = bin2hex(random_bytes(16)); // Creates a hexadecimal string (0-9, a-f)
+    $sanitized_input['cron_token'] = $safe_token;
 
     return $sanitized_input;
 }
@@ -1086,12 +1090,16 @@ add_action('update_option_sumai_settings', 'sumai_schedule_daily_posts');
 
 // Generate cron token on plugin activation
 register_activation_hook(__FILE__, function() {
-    update_option('sumai_cron_token', wp_generate_password(32));
+    // Generate a URL-safe token without shell-problematic characters
+    $safe_token = bin2hex(random_bytes(16)); // Creates a hexadecimal string (0-9, a-f)
+    update_option('sumai_cron_token', $safe_token);
 });
 
 // Add weekly token rotation
 add_action('sumai_rotate_cron_token', function() {
-    update_option('sumai_cron_token', wp_generate_password(32));
+    // Generate a URL-safe token without shell-problematic characters
+    $safe_token = bin2hex(random_bytes(16)); // Creates a hexadecimal string (0-9, a-f)
+    update_option('sumai_cron_token', $safe_token);
 });
 if (!wp_next_scheduled('sumai_rotate_cron_token')) {
     wp_schedule_event(time(), 'weekly', 'sumai_rotate_cron_token');
