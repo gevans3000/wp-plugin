@@ -912,6 +912,44 @@ function sumai_render_settings_page() {
                 }
                 return true;
             });
+
+            // Test New Feed Logic button click handler
+            $('#test_new_feed_logic').on('click', function() {
+                var $button = $(this);
+                var $result = $('#test_new_feed_result');
+                
+                $button.prop('disabled', true).text('Testing...');
+                $result.html('').hide();
+
+                $.ajax({
+                    url: ajaxurl,
+                    type: 'POST',
+                    data: {
+                        action: 'sumai_test_new_feed_logic',
+                        nonce: '<?php echo wp_create_nonce('sumai_test_new_feed_logic'); ?>'
+                    },
+                    success: function(response) {
+                        // Handle the JSON response properly
+                        if (response.success) {
+                            $result.html('<pre>' + response.data + '</pre>').show();
+                        } else {
+                            $result.html('<pre style="color: red;">Error: ' + (response.data || 'Unknown error') + '</pre>').show();
+                        }
+                        
+                        // Scroll to the results
+                        $('html, body').animate({
+                            scrollTop: $result.offset().top - 100
+                        }, 500);
+                    },
+                    error: function(xhr, status, error) {
+                        $result.html('<pre style="color: red;">Error testing feed logic: ' + error + '</pre>').show();
+                        console.error('AJAX Error:', xhr.responseText);
+                    },
+                    complete: function() {
+                        $button.prop('disabled', false).text('Test New Feed Logic');
+                    }
+                });
+            });
         });
         </script>
 
@@ -1153,57 +1191,13 @@ function sumai_test_feeds($feed_urls = '') {
     return $output;
 }
 
-// Add test button to settings page
-add_action('admin_footer', function() {
-    if (!isset($_GET['page']) || $_GET['page'] !== 'sumai-settings') {
-        return;
-    }
-    ?>
-    <script type="text/javascript">
-    jQuery(document).ready(function($) {
-        $('#test_new_feed_logic').on('click', function() {
-            var $button = $(this);
-            var $result = $('#test_new_feed_result');
-            
-            $button.prop('disabled', true).text('Testing...');
-            $result.html('').hide();
-
-            $.ajax({
-                url: ajaxurl,
-                type: 'POST',
-                data: {
-                    action: 'sumai_test_new_feed_logic',
-                    nonce: '<?php echo wp_create_nonce('sumai_test_new_feed_logic'); ?>'
-                },
-                success: function(response) {
-                    // Make sure response is properly displayed with line breaks
-                    $result.html('<pre>' + response + '</pre>').show();
-                    
-                    // Scroll to the results
-                    $('html, body').animate({
-                        scrollTop: $result.offset().top - 100
-                    }, 500);
-                },
-                error: function(xhr, status, error) {
-                    $result.html('<pre style="color: red;">Error testing feed logic: ' + error + '</pre>').show();
-                    console.error('AJAX Error:', xhr.responseText);
-                },
-                complete: function() {
-                    $button.prop('disabled', false).text('Test New Feed Logic');
-                }
-            });
-        });
-    });
-    </script>
-    <?php
-});
-
 // Add AJAX handler for new feed logic test
 add_action('wp_ajax_sumai_test_new_feed_logic', function() {
     check_ajax_referer('sumai_test_new_feed_logic', 'nonce');
     
     if (!current_user_can('manage_options')) {
         wp_send_json_error('Unauthorized');
+        return;
     }
 
     $options = get_option('sumai_settings', array());
@@ -1211,11 +1205,105 @@ add_action('wp_ajax_sumai_test_new_feed_logic', function() {
     
     $content = sumai_test_feeds($feed_urls);
     
-    // Properly escape the content for display in pre tag
-    echo esc_html($content);
-    
-    wp_die();
+    // Use wp_send_json to properly handle the response
+    wp_send_json_success($content);
 });
+
+// AJAX Callback for 'Test Hidden API' button
+add_action('wp_ajax_sumai_test_hidden_api', 'sumai_test_hidden_api_callback');
+function sumai_test_hidden_api_callback() {
+    $env_path = plugin_dir_path(__FILE__) . '.env';
+    if (file_exists($env_path)) {
+        $env_content = file_get_contents($env_path);
+        if (strpos($env_content, 'OPENAI_API_KEY=') !== false) {
+            wp_send_json_success(array('message' => '.env file found with OPENAI_API_KEY.'));
+        } else {
+            wp_send_json_error(array('message' => '.env file found but OPENAI_API_KEY not set.'));
+        }
+    } else {
+        wp_send_json_error(array('message' => '.env file not found in plugin directory.'));
+    }
+    wp_die();
+}
+
+// Enqueue inline JavaScript for 'Test Hidden API' button on the Sumai Settings page
+add_action('admin_footer', 'sumai_test_hidden_api_script');
+function sumai_test_hidden_api_script() {
+    $screen = get_current_screen();
+    if ($screen && $screen->id === 'toplevel_page_sumai-settings') { ?>
+        <script type="text/javascript">
+        jQuery(document).ready(function($) {
+            console.log('Sumai Test Hidden API script loaded.');
+            $('#test-env-api-button').on('click', function(e) {
+                e.preventDefault();
+                console.log('Test Hidden API button clicked.');
+                $.ajax({
+                    url: ajaxurl,
+                    type: 'POST',
+                    dataType: 'json',
+                    data: {
+                        action: 'sumai_test_hidden_api'
+                    },
+                    success: function(response) {
+                        var message = response.success ? 'Success: ' + response.data.message : 'Error: ' + response.data.message;
+                        $('#test-env-api-button').next('#test-env-api-result').remove();
+                        $('#test-env-api-button').after('<div id="test-env-api-result" style="margin-top:10px;">' + message + '</div>');
+                    },
+                    error: function(xhr, status, error) {
+                        alert('AJAX error: ' + error);
+                    }
+                });
+            });
+        });
+        </script>
+    <?php }
+}
+
+// AJAX callback for testing the API key entered in settings
+function sumai_test_api_key_callback() {
+    check_ajax_referer('sumai_test_api_key', 'nonce');
+
+    if (!current_user_can('manage_options')) {
+        wp_send_json_error('Unauthorized');
+    }
+
+    $provided_key = isset($_POST['openai_api_key']) ? trim($_POST['openai_api_key']) : '';
+    if (empty($provided_key)) {
+        wp_send_json_error(array('message' => 'API key is empty.'));
+    } else {
+        wp_send_json_success(array('message' => 'API key is valid.'));
+    }
+    wp_die();
+}
+
+add_action('wp_ajax_sumai_test_api_key', 'sumai_test_api_key_callback');
+
+// Enqueue inline JavaScript for handling the Test API Key button click
+add_action('admin_footer', 'sumai_test_api_key_script');
+function sumai_test_api_key_script() {
+    $screen = get_current_screen();
+    if ($screen && $screen->id === 'toplevel_page_sumai-settings') { ?>
+        <script type="text/javascript">
+        jQuery(document).ready(function($) {
+            $('#test-api-button').on('click', function(e) {
+                e.preventDefault();
+                var apiKey = $('#api-key-input').val();
+                $.post(ajaxurl, {
+                    action: 'sumai_test_api_key',
+                    openai_api_key: apiKey,
+                    nonce: '<?php echo wp_create_nonce('sumai_test_api_key'); ?>'
+                }, function(response) {
+                    if(response.success) {
+                        alert(response.data.message);
+                    } else {
+                        alert(response.data.message);
+                    }
+                });
+            });
+        });
+        </script>
+    <?php }
+}
 
 /**
  * Remove duplicate words from a title while preserving meaning
@@ -1481,100 +1569,4 @@ function sumai_fetch_feed_content($url, $force_fetch = false) {
     
     error_log("[SUMAI] Successfully fetched and cached content from: " . $url);
     return $content;
-}
-
-// AJAX Callback for 'Test Hidden API' button
-add_action('wp_ajax_sumai_test_hidden_api', 'sumai_test_hidden_api_callback');
-function sumai_test_hidden_api_callback() {
-    $env_path = plugin_dir_path(__FILE__) . '.env';
-    if (file_exists($env_path)) {
-        $env_content = file_get_contents($env_path);
-        if (strpos($env_content, 'OPENAI_API_KEY=') !== false) {
-            wp_send_json_success(array('message' => '.env file found with OPENAI_API_KEY.'));
-        } else {
-            wp_send_json_error(array('message' => '.env file found but OPENAI_API_KEY not set.'));
-        }
-    } else {
-        wp_send_json_error(array('message' => '.env file not found in plugin directory.'));
-    }
-    wp_die();
-}
-
-// Enqueue inline JavaScript for 'Test Hidden API' button on the Sumai Settings page
-add_action('admin_footer', 'sumai_test_hidden_api_script');
-function sumai_test_hidden_api_script() {
-    $screen = get_current_screen();
-    if ($screen && $screen->id === 'toplevel_page_sumai-settings') { ?>
-        <script type="text/javascript">
-        jQuery(document).ready(function($) {
-            console.log('Sumai Test Hidden API script loaded.');
-            $('#test-env-api-button').on('click', function(e) {
-                e.preventDefault();
-                console.log('Test Hidden API button clicked.');
-                $.ajax({
-                    url: ajaxurl,
-                    type: 'POST',
-                    dataType: 'json',
-                    data: {
-                        action: 'sumai_test_hidden_api'
-                    },
-                    success: function(response) {
-                        var message = response.success ? 'Success: ' + response.data.message : 'Error: ' + response.data.message;
-                        $('#test-env-api-button').next('#test-env-api-result').remove();
-                        $('#test-env-api-button').after('<div id="test-env-api-result" style="margin-top:10px;">' + message + '</div>');
-                    },
-                    error: function(xhr, status, error) {
-                        alert('AJAX error: ' + error);
-                    }
-                });
-            });
-        });
-        </script>
-    <?php }
-}
-
-// AJAX callback for testing the API key entered in settings
-function sumai_test_api_key_callback() {
-    check_ajax_referer('sumai_test_api_key', 'nonce');
-
-    if (!current_user_can('manage_options')) {
-        wp_send_json_error('Unauthorized');
-    }
-
-    $provided_key = isset($_POST['openai_api_key']) ? trim($_POST['openai_api_key']) : '';
-    if (empty($provided_key)) {
-        wp_send_json_error(array('message' => 'API key is empty.'));
-    } else {
-        wp_send_json_success(array('message' => 'API key is valid.'));
-    }
-    wp_die();
-}
-
-add_action('wp_ajax_sumai_test_api_key', 'sumai_test_api_key_callback');
-
-// Enqueue inline JavaScript for handling the Test API Key button click
-add_action('admin_footer', 'sumai_test_api_key_script');
-function sumai_test_api_key_script() {
-    $screen = get_current_screen();
-    if ($screen && $screen->id === 'toplevel_page_sumai-settings') { ?>
-        <script type="text/javascript">
-        jQuery(document).ready(function($) {
-            $('#test-api-button').on('click', function(e) {
-                e.preventDefault();
-                var apiKey = $('#api-key-input').val();
-                $.post(ajaxurl, {
-                    action: 'sumai_test_api_key',
-                    openai_api_key: apiKey,
-                    nonce: '<?php echo wp_create_nonce('sumai_test_api_key'); ?>'
-                }, function(response) {
-                    if(response.success) {
-                        alert(response.data.message);
-                    } else {
-                        alert(response.data.message);
-                    }
-                });
-            });
-        });
-        </script>
-    <?php }
 }
