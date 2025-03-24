@@ -1060,9 +1060,11 @@ if (!wp_next_scheduled('sumai_rotate_cron_token')) {
 }
 
 // Test the RSS feed fetching and processing
-function sumai_test_feeds() {
-    $options = get_option('sumai_settings', array());
-    $feed_urls = isset($options['feed_urls']) ? $options['feed_urls'] : '';
+function sumai_test_feeds($feed_urls = '') {
+    if (empty($feed_urls)) {
+        $options = get_option('sumai_settings', array());
+        $feed_urls = isset($options['feed_urls']) ? $options['feed_urls'] : '';
+    }
     
     if (empty($feed_urls)) {
         return "No feed URLs configured.";
@@ -1071,22 +1073,81 @@ function sumai_test_feeds() {
     $processed_items = get_option('sumai_processed_items', array());
     $output = "Testing RSS Feeds:\n\n";
     
-    // Get new content
-    $content = sumai_fetch_latest_articles($feed_urls);
+    $feed_urls_array = array_filter(explode("\n", $feed_urls));
+    $output .= "Found " . count($feed_urls_array) . " feed URLs to test.\n\n";
     
-    if (empty($content)) {
-        $output .= "No new content found.\n\n";
-    } else {
-        $output .= "New content found!\n\n";
-        $output .= "Content preview:\n";
-        $output .= substr($content, 0, 500) . "...\n\n";
+    foreach ($feed_urls_array as $index => $feed_url) {
+        $feed_url = trim($feed_url);
+        if (empty($feed_url)) {
+            continue;
+        }
+        
+        $output .= "Testing Feed #" . ($index + 1) . ": " . $feed_url . "\n";
+        
+        try {
+            // Test direct feed fetching
+            $rss = fetch_feed($feed_url);
+            
+            if (is_wp_error($rss)) {
+                $output .= "❌ Error fetching feed: " . $rss->get_error_message() . "\n\n";
+                continue;
+            }
+            
+            $maxitems = $rss->get_item_quantity(5); // Get latest 5 items for testing
+            $rss_items = $rss->get_items(0, $maxitems);
+            
+            if (empty($rss_items)) {
+                $output .= "⚠️ Feed retrieved but contains no items.\n\n";
+                continue;
+            }
+            
+            $output .= "✅ Successfully retrieved feed with " . count($rss_items) . " items.\n";
+            
+            // Display latest item details
+            $latest_item = $rss_items[0];
+            $item_id = $latest_item->get_id();
+            $item_date = $latest_item->get_date('Y-m-d H:i:s');
+            $item_title = $latest_item->get_title();
+            
+            $output .= "Latest item:\n";
+            $output .= "- Title: " . $item_title . "\n";
+            $output .= "- Date: " . $item_date . "\n";
+            $output .= "- ID: " . $item_id . "\n";
+            
+            // Check if this item has been processed before
+            if (isset($processed_items[$feed_url])) {
+                $last_processed = $processed_items[$feed_url];
+                $output .= "\nPreviously processed item from this feed:\n";
+                $output .= "- Title: " . $last_processed['title'] . "\n";
+                $output .= "- Date: " . date('Y-m-d H:i:s', $last_processed['date']) . "\n";
+                $output .= "- ID: " . $last_processed['id'] . "\n";
+                
+                if ($last_processed['id'] === $item_id) {
+                    $output .= "⚠️ Latest item has already been processed.\n";
+                } else {
+                    $output .= "✅ New content available for processing.\n";
+                }
+            } else {
+                $output .= "\n✅ Feed has never been processed before.\n";
+            }
+            
+            $output .= "\n";
+            
+        } catch (Exception $e) {
+            $output .= "❌ Exception: " . $e->getMessage() . "\n\n";
+        }
     }
     
-    $output .= "Previously processed items:\n";
-    foreach ($processed_items as $feed_url => $item) {
-        $output .= "\nFeed: $feed_url\n";
-        $output .= "Last processed: " . date('Y-m-d H:i:s', $item['date']) . "\n";
-        $output .= "Title: " . $item['title'] . "\n";
+    // Test our content fetching function
+    $output .= "\nTesting sumai_fetch_latest_articles() function:\n";
+    $content = sumai_fetch_latest_articles($feed_urls, true);
+    
+    if (empty($content)) {
+        $output .= "❌ No content returned from sumai_fetch_latest_articles()\n";
+    } else {
+        $output .= "✅ Content retrieved successfully!\n";
+        $output .= "Content preview (first 300 characters):\n";
+        $output .= substr($content, 0, 300) . "...\n";
     }
     
     return $output;
@@ -1105,7 +1166,7 @@ add_action('admin_footer', function() {
             var $result = $('#test_new_feed_result');
             
             $button.prop('disabled', true).text('Testing...');
-            $result.hide();
+            $result.html('').hide();
 
             $.ajax({
                 url: ajaxurl,
@@ -1115,10 +1176,17 @@ add_action('admin_footer', function() {
                     nonce: '<?php echo wp_create_nonce('sumai_test_new_feed_logic'); ?>'
                 },
                 success: function(response) {
+                    // Make sure response is properly displayed with line breaks
                     $result.html('<pre>' + response + '</pre>').show();
+                    
+                    // Scroll to the results
+                    $('html, body').animate({
+                        scrollTop: $result.offset().top - 100
+                    }, 500);
                 },
-                error: function() {
-                    $result.html('Error testing new feed logic').show();
+                error: function(xhr, status, error) {
+                    $result.html('<pre style="color: red;">Error testing feed logic: ' + error + '</pre>').show();
+                    console.error('AJAX Error:', xhr.responseText);
                 },
                 complete: function() {
                     $button.prop('disabled', false).text('Test New Feed Logic');
@@ -1143,11 +1211,8 @@ add_action('wp_ajax_sumai_test_new_feed_logic', function() {
     
     $content = sumai_test_feeds($feed_urls);
     
-    if (empty($content)) {
-        echo "No new content found from feeds.";
-    } else {
-        echo "New content found:\n\n" . esc_html($content);
-    }
+    // Properly escape the content for display in pre tag
+    echo esc_html($content);
     
     wp_die();
 });
@@ -1391,12 +1456,12 @@ function sumai_fetch_feed_content($url, $force_fetch = false) {
     }
     
     // Get the feed items
-    $max_items = 10; // Limit to latest 10 items
+    $maxitems = $feed->get_item_quantity(5); // Get latest 5 items
     $feed->init();
     $feed->handle_content_type();
     $feed->set_cache_duration(3600); // 1 hour cache
     
-    $items = $feed->get_items(0, $max_items);
+    $items = $feed->get_items(0, $maxitems);
     
     if (empty($items)) {
         error_log("[SUMAI] No items found in feed: " . $url);
