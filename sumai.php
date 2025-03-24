@@ -3,7 +3,7 @@
 Plugin Name: Sumai
 Plugin URI:  https://biglife360.com/sumai
 Description: Automatically fetches and summarizes the latest RSS feed articles using OpenAI gpt-4o-mini, then publishes a single daily "Daily Summary" post.
-Version:     1.0.1
+Version:     1.0.2
 Author:      biglife360.com
 Author URI:  https://biglife360.com
 License:     GPL2
