@@ -338,6 +338,11 @@ function sumai_fetch_latest_articles($feed_urls = '', $force_fetch = false) {
             error_log("[SUMAI] Exception processing feed $feed_url: " . $e->getMessage());
             continue;
         }
+    
+        // Update processed items in database only if not forcing fetch
+        if (!$force_fetch && !empty($processed_items)) {
+            update_option('sumai_processed_items', $processed_items);
+        }
     }
 
     // Update processed items in database only if not forcing fetch
