@@ -3,7 +3,7 @@
  * Plugin Name: Sumai
  * Plugin URI:  https://biglife360.com/sumai
  * Description: Automatically fetches and summarizes the latest RSS feed articles using OpenAI gpt-4o-mini, then publishes a single daily "Daily Summary" post.
- * Version:     1.1.3
+ * Version:     1.1.4
  * Author:      biglife360.com
  * Author URI:  https://biglife360.com
  * License:     GPL2
@@ -240,10 +240,17 @@ function sumai_generate_daily_summary( bool $force_fetch = false ) {
         sumai_log_event( 'Preparing to create WordPress post...' );
         $draft_mode = isset( $options['draft_mode'] ) ? (int) $options['draft_mode'] : 0;
 
+        // *** FIX START: Ensure wp_unique_post_title() is loaded ***
+        if ( ! function_exists( 'wp_unique_post_title' ) ) {
+            require_once ABSPATH . 'wp-admin/includes/post.php';
+            // sumai_log_event( 'Loaded wp-admin/includes/post.php for wp_unique_post_title().' ); // Optional: Log that we loaded it
+        }
+        // *** FIX END ***
+
         // Ensure title uniqueness using WP core function right before insert
         // Remove potential quotes often added by AI models
         $clean_title = trim( $summary_result['title'], '"\' ' );
-        $unique_title = wp_unique_post_title( $clean_title );
+        $unique_title = wp_unique_post_title( $clean_title ); // This should now work reliably
         if ($unique_title !== $clean_title) {
              sumai_log_event( "Title adjusted for uniqueness: '{$clean_title}' -> '{$unique_title}'" );
         }
@@ -472,7 +479,7 @@ function sumai_summarize_text( string $text, string $context_prompt, string $tit
 
     return array(
         'title' => trim( $parsed_content['title'] ), // Trim whitespace
-        'content' => trim( $parsed_content['summary'] ),
+        'content' => wp_kses_post( trim( $parsed_content['summary'] ) ),
     );
 }
 
@@ -643,39 +650,62 @@ function sumai_sanitize_settings( $input ): array {
         $new_api_key = sanitize_text_field( $input['api_key'] );
         $current_encrypted = $current_settings['api_key'] ?? '';
         // Only try decrypting if there's a current encrypted key
-        $current_decrypted = $current_encrypted ? sumai_get_api_key() : '';
+        $current_decrypted = '';
+        if ($current_encrypted) {
+            // Manually decrypt to compare; sumai_get_api_key caches
+            if ( function_exists('openssl_decrypt') && defined('AUTH_KEY') && AUTH_KEY ) {
+                $decoded = base64_decode( $current_encrypted, true );
+                if ($decoded !== false) {
+                    $cipher = 'aes-256-cbc';
+                    $ivlen = openssl_cipher_iv_length( $cipher );
+                    if ($ivlen !== false && strlen($decoded) > $ivlen) {
+                        $iv = substr( $decoded, 0, $ivlen );
+                        $ciphertext_raw = substr( $decoded, $ivlen );
+                        $decryption_key = AUTH_KEY;
+                        $decrypted_temp = openssl_decrypt( $ciphertext_raw, $cipher, $decryption_key, OPENSSL_RAW_DATA, $iv );
+                        if ($decrypted_temp !== false) {
+                            $current_decrypted = $decrypted_temp;
+                        }
+                    }
+                }
+            }
+        }
 
         // Re-encrypt if new key provided AND it's different from the current one (or if no current one)
-        if ( ! empty( $new_api_key ) && $new_api_key !== $current_decrypted ) {
+        // Also handle the case where the placeholder '********************' is submitted - treat as no change
+        if ( ! empty( $new_api_key ) && $new_api_key !== '********************' && $new_api_key !== $current_decrypted ) {
             if ( function_exists('openssl_encrypt') && defined('AUTH_KEY') && AUTH_KEY ) {
                 $cipher = 'aes-256-cbc';
                 $ivlen = openssl_cipher_iv_length( $cipher );
-                $iv = openssl_random_pseudo_bytes( $ivlen );
-                $encrypted = openssl_encrypt( $new_api_key, $cipher, AUTH_KEY, OPENSSL_RAW_DATA, $iv );
-                if ( $encrypted !== false && $iv !== false ) {
-                    $sanitized_input['api_key'] = base64_encode( $iv . $encrypted );
-                    sumai_log_event('New OpenAI API key encrypted and saved.');
-                } else {
-                    add_settings_error( 'sumai_settings', 'api_key_encrypt_fail', __( 'Failed to encrypt new API key. Key not saved.', 'sumai' ), 'error' );
-                    $sanitized_input['api_key'] = $current_encrypted; // Keep old one
+                 if (false === $ivlen) {
+                      add_settings_error( 'sumai_settings', 'api_key_encrypt_fail', __( 'Failed get IV length for encryption. Key not saved.', 'sumai' ), 'error' );
+                      $sanitized_input['api_key'] = $current_encrypted; // Keep old one
+                 } else {
+                    $iv = openssl_random_pseudo_bytes( $ivlen );
+                    $encrypted = openssl_encrypt( $new_api_key, $cipher, AUTH_KEY, OPENSSL_RAW_DATA, $iv );
+                    if ( $encrypted !== false && $iv !== false ) {
+                        $sanitized_input['api_key'] = base64_encode( $iv . $encrypted );
+                        sumai_log_event('New OpenAI API key encrypted and saved.');
+                    } else {
+                        add_settings_error( 'sumai_settings', 'api_key_encrypt_fail', __( 'Failed to encrypt new API key. Key not saved.', 'sumai' ), 'error' );
+                        $sanitized_input['api_key'] = $current_encrypted; // Keep old one
+                    }
                 }
             } else {
                  add_settings_error( 'sumai_settings', 'api_key_encrypt_env', __( 'Cannot encrypt API key (OpenSSL/AUTH_KEY missing). Key not saved.', 'sumai' ), 'error' );
                  $sanitized_input['api_key'] = $current_encrypted; // Keep old one
             }
-        } elseif ( empty( $new_api_key ) && $current_encrypted !== '' ) {
-             // If field is submitted empty, but a key was previously set, keep the old one
-             // To clear the key, maybe a dedicated button is better, or instruct user to enter 'DELETE' ?
-             // For now, leaving blank retains the current key.
+        } elseif ( empty( $new_api_key ) && !empty($current_encrypted) ) {
+             // If field is submitted empty, and a key was previously set, keep the old one
              $sanitized_input['api_key'] = $current_encrypted;
              add_settings_error( 'sumai_settings', 'api_key_not_cleared', __( 'API key field was empty, existing key retained. To clear, delete and reactivate plugin or manage via database.', 'sumai' ), 'warning' );
         } else {
-            // Key is the same or wasn't set, keep current value (which might be empty)
+            // Key is the same, wasn't set, or placeholder submitted, keep current value (which might be empty)
             $sanitized_input['api_key'] = $current_encrypted;
         }
     } else {
          // If api_key is not in the submitted $input array at all, keep the existing one.
-         $sanitized_input['api_key'] = $current_encrypted;
+         $sanitized_input['api_key'] = $current_settings['api_key'] ?? '';
     }
 
 
@@ -692,7 +722,9 @@ function sumai_render_settings_page() {
     // Handle manual generation trigger POST request
     if ( 'POST' === $_SERVER['REQUEST_METHOD'] && isset( $_POST['sumai_generate_now'] ) && check_admin_referer( 'sumai_generate_now_action' ) ) {
         // Ensure required admin files are loaded for manual trigger context
-        require_once ABSPATH . 'wp-admin/includes/post.php';
+        if ( ! function_exists( 'wp_insert_post' ) ) {
+             require_once ABSPATH . 'wp-admin/includes/post.php';
+        }
 
         $result = sumai_generate_daily_summary( true ); // Force fetch for manual run
         if ( $result !== false ) {
@@ -904,7 +936,7 @@ function sumai_render_settings_page() {
             $button.prop('disabled', true).text('<?php esc_js( __( 'Testing...', 'sumai' ) ); ?>');
             $resultSpan.html('<?php esc_js( __( 'Testing...', 'sumai' ) ); ?>').css('color', 'inherit');
 
-            $.ajax({ /* ... AJAX details same as before ... */
+            $.ajax({
                  url: ajaxurl, type: 'POST',
                 data: { action: 'sumai_test_api_key', _ajax_nonce: '<?php echo wp_create_nonce( 'sumai_test_api_key_nonce' ); ?>', api_key_to_test: keyToSend },
                 success: function(response) {
@@ -925,7 +957,7 @@ function sumai_render_settings_page() {
             var $resultDiv = $('#feed-test-result');
             $button.prop('disabled', true).text('<?php esc_js( __( 'Testing...', 'sumai' ) ); ?>');
             $resultDiv.html('<?php esc_js( __( 'Testing feeds...', 'sumai' ) ); ?>').css('color', 'inherit').show();
-            $.ajax({ /* ... AJAX details same as before ... */
+            $.ajax({
                 url: ajaxurl, type: 'POST',
                 data: { action: 'sumai_test_feeds', _ajax_nonce: '<?php echo wp_create_nonce( 'sumai_test_feeds_nonce' ); ?>' },
                 success: function(response) {
@@ -1103,7 +1135,17 @@ function sumai_prune_logs() {
 
     foreach ( $lines as $line ) {
         if ( preg_match( '/^\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} [A-Z\/+-\w\:]+)\]/', $line, $matches ) ) { // Allow for timezone offsets like +00:00
-            $timestamp = strtotime( $matches[1] );
+            // Try parsing the date string to get a timestamp
+            $timestamp = false;
+            try {
+                 // Use DateTime to handle timezones correctly if present
+                 $dt = new DateTime($matches[1]);
+                 $timestamp = $dt->getTimestamp();
+            } catch (Exception $e) {
+                 // Fallback for simpler formats if DateTime fails
+                 $timestamp = strtotime( $matches[1] );
+            }
+
             if ( $timestamp !== false && $timestamp >= $cutoff_timestamp ) {
                 $retained_lines[] = $line;
             } else {
@@ -1135,15 +1177,19 @@ function sumai_get_debug_info(): array {
     foreach ( $cron_jobs as $time => $hooks ) {
         foreach ([SUMAI_CRON_HOOK, SUMAI_ROTATE_TOKEN_HOOK, SUMAI_PRUNE_LOGS_HOOK] as $hook_name) {
             if ( isset( $hooks[$hook_name] ) ) {
+                 $event_key = key($hooks[$hook_name]); // Get the first key for this hook/time
+                 $schedule = isset($hooks[$hook_name][$event_key]['schedule']) ? $hooks[$hook_name][$event_key]['schedule'] : 'N/A';
                 $debug_info['cron_jobs'][$hook_name] = [
+                    'next_run_utc' => get_date_from_gmt( date( 'Y-m-d H:i:s', $time ), 'Y-m-d H:i:s T' ),
                     'next_run_site' => wp_date( 'Y-m-d H:i:s T', $time ),
-                    'schedule' => isset($hooks[$hook_name][key($hooks[$hook_name])]['schedule']) ? $hooks[$hook_name][key($hooks[$hook_name])]['schedule'] : 'N/A'
+                    'schedule' => $schedule
                 ];
             }
         }
     }
     $log_file = sumai_ensure_log_dir();
     $debug_info['log_file_path'] = $log_file ?: 'Log directory unwritable or not found.';
+    $debug_info['log_writable'] = $log_file && is_writable($log_file);
     $debug_info['log_readable'] = $log_file && is_readable($log_file);
     if ( $debug_info['log_readable'] ) {
         // Read entire file, might be large but pruning should keep it manageable
@@ -1188,7 +1234,7 @@ function sumai_render_debug_info() {
         <?php if ( ! empty( $debug_info['cron_jobs'] ) ): ?>
             <table class="wp-list-table widefat fixed striped"><thead><tr><th>Hook</th><th>Next Run (Site Time)</th><th>Schedule</th></tr></thead><tbody>
                 <?php foreach ($debug_info['cron_jobs'] as $hook => $details): ?>
-                    <tr><td><?php echo esc_html($hook); ?></td><td><?php echo esc_html($details['next_run_site']); ?></td><td><?php echo esc_html($details['schedule']); ?></td></tr>
+                    <tr><td><?php echo esc_html($hook); ?></td><td><?php echo esc_html($details['next_run_site']); ?> (<?php echo esc_html($details['next_run_utc']); ?>)</td><td><?php echo esc_html($details['schedule']); ?></td></tr>
                 <?php endforeach; ?>
             </tbody></table>
         <?php else: ?><p><?php esc_html_e( 'No Sumai cron jobs scheduled.', 'sumai' ); ?></p><?php endif; ?>
@@ -1202,7 +1248,11 @@ function sumai_render_debug_info() {
 
         <h3><?php esc_html_e( 'Recent Log Entries (Last 50)', 'sumai' ); ?></h3>
         <p><em><?php printf(esc_html__('Log File Path: %s', 'sumai'), esc_html($debug_info['log_file_path'])); ?></em>
-           <em>(<?php echo $debug_info['log_readable'] ? 'Readable' : '<span style="color:red;">Not Readable</span>'; ?>)</em></p>
+           <em>(<?php
+              echo $debug_info['log_readable'] ? 'Readable' : '<span style="color:red;">Not Readable</span>';
+              echo ', ';
+              echo $debug_info['log_writable'] ? 'Writable' : '<span style="color:red;">Not Writable</span>';
+           ?>)</em></p>
         <div class="sumai-log-entries" style="max-height: 400px; overflow-y: auto; background: #f1f1f1; border: 1px solid #ccc; padding: 10px; font-family: monospace; white-space: pre-wrap; word-break: break-word;">
             <?php echo esc_html( implode( "\n", $debug_info['recent_logs'] ) ); ?>
         </div>
