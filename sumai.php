@@ -240,11 +240,6 @@ function sumai_generate_daily_summary( bool $force_fetch = false ) {
         sumai_log_event( 'Preparing to create WordPress post...' );
         $draft_mode = isset( $options['draft_mode'] ) ? (int) $options['draft_mode'] : 0;
 
-        // Ensure required admin files are loaded for functions like wp_unique_post_title
-        if ( ! function_exists( 'wp_unique_post_title' ) ) {
-            require_once ABSPATH . 'wp-admin/includes/post.php';
-        }
-
         // Ensure title uniqueness using WP core function right before insert
         // Remove potential quotes often added by AI models
         $clean_title = trim( $summary_result['title'], '"\' ' );
@@ -696,6 +691,9 @@ function sumai_render_settings_page() {
 
     // Handle manual generation trigger POST request
     if ( 'POST' === $_SERVER['REQUEST_METHOD'] && isset( $_POST['sumai_generate_now'] ) && check_admin_referer( 'sumai_generate_now_action' ) ) {
+        // Ensure required admin files are loaded for manual trigger context
+        require_once ABSPATH . 'wp-admin/includes/post.php';
+
         $result = sumai_generate_daily_summary( true ); // Force fetch for manual run
         if ( $result !== false ) {
             add_settings_error( 'sumai_settings', 'manual_gen_success', sprintf(__( 'Manual summary post generated (Post ID: %d).', 'sumai' ), $result), 'success' );
