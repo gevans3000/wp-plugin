@@ -3,7 +3,7 @@
  * Plugin Name: Sumai
  * Plugin URI:  https://biglife360.com/sumai
  * Description: Automatically fetches and summarizes the latest RSS feed articles using OpenAI gpt-4o-mini, then publishes a single daily "Daily Summary" post.
- * Version:     1.1.2
+ * Version:     1.1.3
  * Author:      biglife360.com
  * Author URI:  https://biglife360.com
  * License:     GPL2
@@ -239,6 +239,11 @@ function sumai_generate_daily_summary( bool $force_fetch = false ) {
         // --- Create Post ---
         sumai_log_event( 'Preparing to create WordPress post...' );
         $draft_mode = isset( $options['draft_mode'] ) ? (int) $options['draft_mode'] : 0;
+
+        // Ensure required admin files are loaded for functions like wp_unique_post_title
+        if ( ! function_exists( 'wp_unique_post_title' ) ) {
+            require_once ABSPATH . 'wp-admin/includes/post.php';
+        }
 
         // Ensure title uniqueness using WP core function right before insert
         // Remove potential quotes often added by AI models
@@ -480,32 +485,39 @@ function sumai_summarize_text( string $text, string $context_prompt, string $tit
  * Retrieves and decrypts the OpenAI API key from settings.
  */
 function sumai_get_api_key(): string {
-    static $decrypted_key = null; // Cache result per request
+    static $cached_key = null; // Cache result per request
 
-    if ( $decrypted_key !== null ) return $decrypted_key; // Return cached result ('', or the key)
+    if ( $cached_key !== null ) return $cached_key; // Return cached result ('', or the key)
 
+    // Prioritize constant defined in wp-config.php
+    if ( defined( 'SUMAI_OPENAI_API_KEY' ) && ! empty( SUMAI_OPENAI_API_KEY ) ) {
+        $cached_key = SUMAI_OPENAI_API_KEY;
+        return $cached_key;
+    }
+
+    // Fallback to database option if constant is not defined
     $options = get_option( SUMAI_SETTINGS_OPTION );
     $encrypted_key = isset( $options['api_key'] ) ? $options['api_key'] : '';
 
     if ( empty( $encrypted_key ) ) {
-        $decrypted_key = ''; return ''; // Cache empty
+        $cached_key = ''; return ''; // Cache empty
     }
     if ( ! function_exists('openssl_decrypt') || ! defined( 'AUTH_KEY' ) || ! AUTH_KEY ) {
-         sumai_log_event( 'Cannot decrypt API key: OpenSSL missing or AUTH_KEY not defined.', true );
-         $decrypted_key = ''; return ''; // Cache empty
+         sumai_log_event( 'Cannot decrypt API key from DB: OpenSSL missing or AUTH_KEY not defined.', true );
+         $cached_key = ''; return ''; // Cache empty
     }
 
     $decoded = base64_decode( $encrypted_key, true );
     if ($decoded === false) {
-        sumai_log_event( 'Failed to base64 decode API key.', true );
-        $decrypted_key = ''; return '';
+        sumai_log_event( 'Failed to base64 decode API key from DB.', true );
+        $cached_key = ''; return '';
     }
 
     $cipher = 'aes-256-cbc';
     $ivlen = openssl_cipher_iv_length( $cipher );
      if ($ivlen === false || strlen($decoded) <= $ivlen) {
-        sumai_log_event( 'Invalid encrypted API key format (IV length).', true );
-        $decrypted_key = ''; return '';
+        sumai_log_event( 'Invalid encrypted API key format from DB (IV length).', true );
+        $cached_key = ''; return '';
     }
 
     $iv = substr( $decoded, 0, $ivlen );
@@ -514,12 +526,13 @@ function sumai_get_api_key(): string {
     $decrypted = openssl_decrypt( $ciphertext_raw, $cipher, $decryption_key, OPENSSL_RAW_DATA, $iv );
 
     if ( $decrypted === false ) {
-        sumai_log_event( 'Failed to decrypt API key. Check AUTH_KEY and if key was saved correctly.', true );
-        $decrypted_key = ''; return '';
+        sumai_log_event( 'Failed to decrypt API key from DB. Check AUTH_KEY and if key was saved correctly.', true );
+        $cached_key = ''; return '';
     }
 
-    $decrypted_key = $decrypted; // Cache success
-    return $decrypted_key;
+    // Cache the successfully decrypted key
+    $cached_key = $decrypted;
+    return $cached_key;
 }
 
 /**
