@@ -185,6 +185,29 @@ function sumai_check_external_trigger() {
  * @param bool $force_fetch If true, ignores processed GUID check (for manual trigger/testing).
  * @return int|false Post ID on success, false on failure.
  */
+/**
+ * Wrapper function triggered by the cron hook to ensure admin files are loaded.
+ */
+function sumai_run_daily_summary_hook() {
+    sumai_log_event( 'Cron hook triggered. Ensuring admin files are loaded...' );
+
+    // Ensure core post functions are available, including wp_unique_post_title()
+    if ( ! function_exists( 'wp_insert_post' ) ) { // Check for a common function in post.php
+        sumai_log_event( 'Loading wp-admin/includes/post.php...' );
+        require_once ABSPATH . 'wp-admin/includes/post.php';
+        if ( ! function_exists( 'wp_insert_post' ) ) {
+             sumai_log_event( 'FATAL: Failed to load wp-admin/includes/post.php!', true );
+             return; // Stop if loading failed
+        }
+    } else {
+         sumai_log_event( 'wp-admin/includes/post.php seems already loaded.' );
+    }
+
+     // Now call the main generation function
+     sumai_log_event( 'Calling sumai_generate_daily_summary()...' );
+     sumai_generate_daily_summary();
+}
+
 function sumai_generate_daily_summary( bool $force_fetch = false ) {
     sumai_log_event( 'Starting summary generation...' . ($force_fetch ? ' (Forced Fetch)' : '') );
 
