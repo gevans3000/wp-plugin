@@ -3,7 +3,7 @@
  * Plugin Name: Sumai
  * Plugin URI:  https://biglife360.com/sumai
  * Description: Fetches RSS articles, summarizes with OpenAI, and posts a daily summary.
- * Version:     1.2.0
+ * Version:     1.2.2
  * Author:      biglife360.com
  * Author URI:  https://biglife360.com
  * License:     GPL2
@@ -77,7 +77,8 @@ function sumai_schedule_daily_event() {
         sumai_log_event('Daily event scheduled. Next: '.wp_date('Y-m-d H:i:s T', $first_run));
     } catch (Exception $e) {
         sumai_log_event('Error scheduling event: '.$e->getMessage().'. Fallback.', true);
-        $first_run = strtotime('tomorrow 03:00', $now);
+        $tz = wp_timezone(); $dt = new DateTime('now', $tz); $dt->modify('+1 day'); $dt->setTime(3, 0, 0);
+        $first_run = $dt->getTimestamp();
         wp_schedule_event($first_run, 'daily', SUMAI_CRON_HOOK);
         sumai_log_event('Daily event scheduled (fallback). Next: '.wp_date('Y-m-d H:i:s T', $first_run));
     }
@@ -89,7 +90,7 @@ function sumai_rotate_cron_token() {
 }
 
 add_action('update_option_'.SUMAI_SETTINGS_OPTION, 'sumai_schedule_daily_event', 10, 0);
-add_action(SUMAI_CRON_HOOK, 'sumai_generate_daily_summary'); // Direct call
+add_action(SUMAI_CRON_HOOK, 'sumai_generate_daily_summary');
 add_action(SUMAI_ROTATE_TOKEN_HOOK, 'sumai_rotate_cron_token');
 add_action(SUMAI_PRUNE_LOGS_HOOK, 'sumai_prune_logs');
 
@@ -108,7 +109,7 @@ function sumai_check_external_trigger() {
         if (false === get_transient($lock_key)) {
             set_transient($lock_key, 1, MINUTE_IN_SECONDS * 5);
             sumai_log_event('External trigger validated. Running summary generation...');
-            do_action(SUMAI_CRON_HOOK); // Trigger main hook
+            do_action(SUMAI_CRON_HOOK);
         } else { sumai_log_event('External trigger skipped, lock active.', true); }
     } else { sumai_log_event('Invalid external trigger token.', true); }
 }
@@ -118,40 +119,23 @@ function sumai_check_external_trigger() {
  * ------------------------------------------------------------------------- */
 
 function sumai_generate_daily_summary( bool $force_fetch = false ) {
-
-    // --- Attempt to load FULL WP environment if functions missing ---
-    if ( ! function_exists( 'wp_insert_post' ) || ! function_exists( 'wp_unique_post_title' )) {
-        sumai_log_event('Core post functions missing. Attempting to load wp-load.php...');
+    // --- Attempt wp-load.php include if core functions missing ---
+    if (!function_exists('wp_insert_post') || !function_exists('wp_unique_post_title')) {
+        sumai_log_event('Core post functions missing. Attempting full wp-load.php include...');
         $wp_load_path = ABSPATH . 'wp-load.php';
-        if ( file_exists( $wp_load_path ) && is_readable($wp_load_path) ) {
-            // Use include_once to avoid potential redefinition errors if already loaded somehow
-            $load_result = include_once( $wp_load_path );
-            sumai_log_event('wp-load.php include_once result: ' . ($load_result ? 'Success/Already loaded' : 'FAILURE'));
-
-            // Check AGAIN after attempting load
-             if ( ! function_exists( 'wp_insert_post' ) || ! function_exists( 'wp_unique_post_title' )) {
-                 sumai_log_event('FATAL: Functions still missing after including wp-load.php! Check environment.', true);
-                 // Also try loading post.php one last time directly as a final fallback
-                 $post_file = ABSPATH . 'wp-admin/includes/post.php';
-                 if ( file_exists( $post_file ) && is_readable($post_file) ) require_once $post_file;
-
-                 // Final definitive check
-                 if ( ! function_exists( 'wp_insert_post' ) || ! function_exists( 'wp_unique_post_title' )) {
-                      sumai_log_event('FATAL: All loading attempts failed. Aborting.', true);
-                      return false;
-                 } else {
-                      sumai_log_event('WORKAROUND: Functions loaded after direct post.php include (post wp-load).');
-                 }
-             } else {
-                 sumai_log_event('Functions loaded successfully after including wp-load.php.');
-             }
+        if (file_exists($wp_load_path) && is_readable($wp_load_path)) {
+            $load_result = include_once($wp_load_path);
+            sumai_log_event('wp-load.php include result: '.($load_result?'OK':'FAIL'));
+            if (!function_exists('wp_insert_post') || !function_exists('wp_unique_post_title')) {
+                sumai_log_event('FATAL: Functions still missing after wp-load.php!', true);
+                return false; // Abort if wp-load didn't fix it
+            }
         } else {
-             sumai_log_event('FATAL: wp-load.php not found or not readable. Cannot load WP environment.', true);
-             return false;
+            sumai_log_event('FATAL: wp-load.php not found/readable. Aborting.', true);
+            return false;
         }
     }
     // --- END WP Load Attempt ---
-
 
     sumai_log_event('Starting summary generation job.'.($force_fetch ? ' (Forced)' : ''));
     $options = get_option(SUMAI_SETTINGS_OPTION, []);
@@ -163,23 +147,18 @@ function sumai_generate_daily_summary( bool $force_fetch = false ) {
     if (empty($feed_urls)) { sumai_log_event('Error: No valid feed URLs.', true); return false; }
 
     try {
-        // Fetch Content
         list($new_content, $guids_to_add) = sumai_fetch_new_articles_content($feed_urls, $force_fetch);
         if (empty($new_content)) { sumai_log_event('No new content found. Skipping summary.'); return false; }
         sumai_log_event('Fetched '.mb_strlen($new_content).' chars new content.');
 
-        // Generate Summary
         $summary_result = sumai_summarize_text($new_content, $options['context_prompt'] ?? '', $options['title_prompt'] ?? '', $api_key);
-        unset($new_content); // Free memory
+        unset($new_content);
         if (!$summary_result || empty($summary_result['title'])) { sumai_log_event('Error: Failed to get summary/title from API.', true); return false; }
         sumai_log_event('Summary & title generated.');
 
-        // Create Post
         sumai_log_event('Preparing to create post...');
-
-        // Assume functions exist due to check at top, proceed directly
         $clean_title = trim($summary_result['title'], '"\' ');
-        $unique_title = wp_unique_post_title($clean_title);
+        $unique_title = wp_unique_post_title($clean_title); // Assumed to exist after check above
         if ($unique_title !== $clean_title) sumai_log_event("Title adjusted: '{$clean_title}' -> '{$unique_title}'");
 
         $author_id = (is_user_logged_in() && ($uid = get_current_user_id()) > 0) ? $uid : 1;
@@ -189,20 +168,12 @@ function sumai_generate_daily_summary( bool $force_fetch = false ) {
             if (!$author || !$author->has_cap('publish_posts')) { sumai_log_event("Error: Author ID {$author_id} invalid/cannot publish.", true); return false; }
         }
 
-        $post_data = [
-            'post_title'   => $unique_title,
-            'post_content' => $summary_result['content'],
-            'post_status'  => ($options['draft_mode'] ?? 0) ? 'draft' : 'publish',
-            'post_type'    => 'post',
-            'post_author'  => $author_id,
-            'meta_input'   => ['_sumai_generated' => true]
-        ];
-        $post_id = wp_insert_post($post_data, true);
+        $post_data = ['post_title'=>$unique_title, 'post_content'=>$summary_result['content'], 'post_status'=>($options['draft_mode']??0)?'draft':'publish', 'post_type'=>'post', 'post_author'=>$author_id, 'meta_input'=>['_sumai_generated'=>true]];
+        $post_id = wp_insert_post($post_data, true); // Assumed to exist after check above
 
         if (is_wp_error($post_id)) { sumai_log_event("Error creating post: ".$post_id->get_error_message(), true); return false; }
         sumai_log_event("Post created ID: {$post_id}, Status: {$post_data['post_status']}.");
 
-        // Update Processed GUIDs
         if (!empty($guids_to_add)) {
             $guids = get_option(SUMAI_PROCESSED_GUIDS_OPTION, []);
             $guids = array_merge($guids, $guids_to_add);
@@ -231,11 +202,10 @@ function sumai_fetch_new_articles_content( array $feed_urls, bool $force_fetch =
 
     foreach ($feed_urls as $url) {
         $url = esc_url_raw(trim($url)); if (empty($url)) continue;
-        // sumai_log_event("Processing feed: {$url}"); // Reduce log noise
         $feed = fetch_feed($url);
         if (is_wp_error($feed)) { sumai_log_event("Error fetch feed {$url}: ".$feed->get_error_message(), true); continue; }
         $items = $feed->get_items(0, SUMAI_FEED_ITEM_LIMIT);
-        if (empty($items)) { continue; } // Don't log 'no items' unless debugging feeds specifically
+        if (empty($items)) continue;
 
         $added_count = 0;
         foreach ($items as $item) {
@@ -250,7 +220,7 @@ function sumai_fetch_new_articles_content( array $feed_urls, bool $force_fetch =
             if (($char_count + $item_len) > SUMAI_MAX_INPUT_CHARS) { sumai_log_event("Skipping '{$item_title}' - exceeds max chars."); break; }
             $content .= $item_content; $char_count += $item_len; $new_guids[$guid] = $now; $added_count++;
         }
-        if ($added_count > 0) sumai_log_event("Added {$added_count} new items from {$url}. Total chars: {$char_count}");
+        // if ($added_count > 0) sumai_log_event("Added {$added_count} items from {$url}. Chars: {$char_count}"); // Reduce log noise
         unset($feed, $items);
     }
     return [$content, $new_guids];
@@ -261,25 +231,15 @@ function sumai_fetch_new_articles_content( array $feed_urls, bool $force_fetch =
  * ------------------------------------------------------------------------- */
 
 function sumai_summarize_text( string $text, string $ctx_prompt, string $title_prompt, string $api_key ): ?array {
-    if (empty($text)) { sumai_log_event('Error: Empty text for summary.', true); return null; }
-    if (mb_strlen($text) > SUMAI_MAX_INPUT_CHARS) $text = mb_substr($text, 0, SUMAI_MAX_INPUT_CHARS);
-
+    if (empty($text)) return null; if (mb_strlen($text) > SUMAI_MAX_INPUT_CHARS) $text = mb_substr($text, 0, SUMAI_MAX_INPUT_CHARS);
     $messages = [ ['role'=>'system', 'content'=>"Output valid JSON {\"title\":\"...\",\"summary\":\"...\"}. Context: ".($ctx_prompt?:"Summarize concisely.")." Title: ".($title_prompt?:"Generate title.")], ['role'=>'user', 'content'=>"Text:\n\n".$text] ];
     $body = ['model'=>'gpt-4o-mini', 'messages'=>$messages, 'max_tokens'=>1500, 'temperature'=>0.6, 'response_format'=>['type'=>'json_object']];
     $args = ['headers'=>['Content-Type'=>'application/json','Authorization'=>'Bearer '.$api_key],'body'=>json_encode($body),'method'=>'POST','timeout'=>90];
-
-    sumai_log_event('Sending request to OpenAI API...');
     $resp = wp_remote_post('https://api.openai.com/v1/chat/completions', $args);
-
     if (is_wp_error($resp)) { sumai_log_event('OpenAI WP Error: '.$resp->get_error_message(), true); return null; }
-    $status = wp_remote_retrieve_response_code($resp); $body = wp_remote_retrieve_body($resp);
-    if ($status !== 200) { sumai_log_event("OpenAI HTTP Error: {$status}. Body: ".$body, true); return null; }
-
-    $data = json_decode($body, true); $json_str = $data['choices'][0]['message']['content'] ?? null;
-    if (!is_string($json_str)) { sumai_log_event('Error: Invalid API response structure.', true); return null; }
-    $parsed = json_decode($json_str, true);
-    if (json_last_error() !== JSON_ERROR_NONE || !is_array($parsed) || empty($parsed['title']) || !isset($parsed['summary'])) { sumai_log_event('Error: Failed parsing API JSON. Raw: '.$json_str, true); return null; }
-
+    $status = wp_remote_retrieve_response_code($resp); $body = wp_remote_retrieve_body($resp); if ($status !== 200) { sumai_log_event("OpenAI HTTP Error: {$status}. Body: ".$body, true); return null; }
+    $data = json_decode($body, true); $json_str = $data['choices'][0]['message']['content'] ?? null; if (!is_string($json_str)) return null; $parsed = json_decode($json_str, true);
+    if (json_last_error() !== JSON_ERROR_NONE || !is_array($parsed) || empty($parsed['title']) || !isset($parsed['summary'])) { sumai_log_event('Error parsing API JSON. Raw: '.$json_str, true); return null; }
     return ['title'=>trim($parsed['title']), 'content'=>trim($parsed['summary'])];
 }
 
@@ -294,8 +254,7 @@ function sumai_get_api_key(): string {
     if (empty($enc) || !function_exists('openssl_decrypt') || !defined('AUTH_KEY') || !AUTH_KEY) return $key = '';
     $decoded = base64_decode($enc, true); $cipher = 'aes-256-cbc'; $ivlen = openssl_cipher_iv_length($cipher);
     if ($decoded === false || $ivlen === false || strlen($decoded) <= $ivlen) return $key = '';
-    $iv = substr($decoded, 0, $ivlen); $cipher_raw = substr($decoded, $ivlen);
-    $dec = openssl_decrypt($cipher_raw, $cipher, AUTH_KEY, OPENSSL_RAW_DATA, $iv);
+    $iv = substr($decoded, 0, $ivlen); $cipher_raw = substr($decoded, $ivlen); $dec = openssl_decrypt($cipher_raw, $cipher, AUTH_KEY, OPENSSL_RAW_DATA, $iv);
     return $key = ($dec === false) ? '' : $dec;
 }
 
@@ -327,7 +286,6 @@ function sumai_register_settings() { register_setting('sumai_options_group', SUM
 
 function sumai_sanitize_settings($input): array {
     $sanitized = []; $current = get_option(SUMAI_SETTINGS_OPTION, []); $current_enc = $current['api_key'] ?? '';
-
     $valid_urls = []; if (isset($input['feed_urls'])) { $urls = array_map('trim', preg_split('/\r\n|\r|\n/', sanitize_textarea_field($input['feed_urls']))); foreach ($urls as $url) { if (!empty($url) && filter_var($url, FILTER_VALIDATE_URL) && preg_match('/^https?:\/\//', $url)) $valid_urls[] = $url; } $valid_urls = array_slice($valid_urls, 0, SUMAI_MAX_FEED_URLS); }
     $sanitized['feed_urls'] = implode("\n", $valid_urls);
     $sanitized['context_prompt'] = isset($input['context_prompt']) ? sanitize_textarea_field($input['context_prompt']) : '';
@@ -343,14 +301,11 @@ function sumai_sanitize_settings($input): array {
         if ($new_key_in === '********************') $sanitized['api_key'] = $current_enc;
         elseif (empty($new_key_in)) { $sanitized['api_key'] = ''; if (!empty($current_enc)) sumai_log_event('API key cleared.'); }
         else {
-            if (function_exists('openssl_encrypt') && defined('AUTH_KEY') && AUTH_KEY) {
-                $cipher = 'aes-256-cbc'; $ivlen = openssl_cipher_iv_length($cipher);
+            if (function_exists('openssl_encrypt') && defined('AUTH_KEY') && AUTH_KEY) { $cipher = 'aes-256-cbc'; $ivlen = openssl_cipher_iv_length($cipher);
                 if ($ivlen !== false) { $iv = openssl_random_pseudo_bytes($ivlen); $enc = openssl_encrypt($new_key_in, $cipher, AUTH_KEY, OPENSSL_RAW_DATA, $iv);
                     if ($enc !== false && $iv !== false) { $new_enc = base64_encode($iv.$enc); if ($new_enc !== $current_enc) sumai_log_event('API key saved.'); $sanitized['api_key'] = $new_enc; }
-                    else { sumai_log_event('Failed encrypt API key.', true); $sanitized['api_key'] = $current_enc; }
-                } else $sanitized['api_key'] = $current_enc;
-            } else { sumai_log_event('Cannot encrypt API key (OpenSSL/AUTH_KEY missing).', true); $sanitized['api_key'] = $current_enc; }
-        }
+                    else { $sanitized['api_key'] = $current_enc; } } else $sanitized['api_key'] = $current_enc;
+            } else $sanitized['api_key'] = $current_enc; }
     } else $sanitized['api_key'] = $current_enc;
     return $sanitized;
 }
@@ -358,7 +313,7 @@ function sumai_sanitize_settings($input): array {
 function sumai_render_settings_page() {
     if (!current_user_can('manage_options')) return;
     if ('POST'===$_SERVER['REQUEST_METHOD'] && isset($_POST['sumai_generate_now']) && check_admin_referer('sumai_generate_now_action')) {
-        $result = sumai_generate_daily_summary(true); $type = ($result!==false && is_int($result))?'success':'error'; $msg = ($type==='success')?sprintf('Generated Post ID: %d.',$result):'Generation failed/skipped. Check logs.'; add_settings_error('sumai_settings','manual_gen',$msg,$type); set_transient('settings_errors',get_settings_errors(),30); wp_safe_redirect(admin_url('options-general.php?page=sumai-settings')); exit;
+        $result = sumai_generate_daily_summary(true); $type = ($result!==false && is_int($result))?'success':'error'; $msg = ($type==='success')?sprintf('Generated Post ID: %d.',$result):'Generation failed/skipped.'; add_settings_error('sumai_settings','manual_gen',$msg,$type); set_transient('settings_errors',get_settings_errors(),30); wp_safe_redirect(admin_url('options-general.php?page=sumai-settings')); exit;
     }
     $notices = get_transient('settings_errors'); if ($notices) { settings_errors('sumai_settings'); delete_transient('settings_errors'); } else { settings_errors('sumai_settings'); }
     $opts = get_option(SUMAI_SETTINGS_OPTION, []); $opts += ['feed_urls'=>'','context_prompt'=>'','title_prompt'=>'','api_key'=>'','draft_mode'=>0,'schedule_time'=>'03:00','post_signature'=>'']; $const_key = defined('SUMAI_OPENAI_API_KEY')&&!empty(SUMAI_OPENAI_API_KEY); $db_key = !empty($opts['api_key']); $api_disp = $const_key?'*** Constant ***':($db_key?'********************':'');
@@ -366,10 +321,7 @@ function sumai_render_settings_page() {
     <div class="wrap"><h1>Sumai Settings</h1><div id="sumai-tabs"><nav class="nav-tab-wrapper"><a href="#tab-main" class="nav-tab">Main</a><a href="#tab-advanced" class="nav-tab">Advanced</a><a href="#tab-debug" class="nav-tab">Debug</a></nav>
     <div id="tab-main" class="tab-content"><form method="post" action="options.php"><?php settings_fields('sumai_options_group'); ?><table class="form-table">
     <tr><th><label for="f_urls">Feed URLs</label></th><td><textarea id="f_urls" name="<?=esc_attr(SUMAI_SETTINGS_OPTION)?>[feed_urls]" rows="3" class="large-text"><?=esc_textarea($opts['feed_urls'])?></textarea><p class="description">Max <?=SUMAI_MAX_FEED_URLS?> feeds.</p></td></tr>
-    <tr><th><label for="f_key">API Key</label></th><td>
-        <?php if($const_key):?><input type="text" value="<?=esc_attr($api_disp)?>" readonly disabled/><p class="description">Defined in wp-config.</p>
-        <?php else:?><input type="password" id="f_key" name="<?=esc_attr(SUMAI_SETTINGS_OPTION)?>[api_key]" value="<?=esc_attr($api_disp)?>" placeholder="<?= $db_key?'Update':'Enter Key' ?>" autocomplete="new-password"/><button type="button" id="test-api-btn" class="button">Test</button><span id="api-test-res"></span><p class="description">Stored securely. <?= $db_key?'Leave stars to keep.':''?></p><?php endif;?>
-    </td></tr>
+    <tr><th><label for="f_key">API Key</label></th><td><?php if($const_key):?><input type="text" value="<?=esc_attr($api_disp)?>" readonly disabled/><p class="description">Defined in wp-config.</p><?php else:?><input type="password" id="f_key" name="<?=esc_attr(SUMAI_SETTINGS_OPTION)?>[api_key]" value="<?=esc_attr($api_disp)?>" placeholder="<?= $db_key?'Update':'Enter Key' ?>" autocomplete="new-password"/><button type="button" id="test-api-btn" class="button">Test</button><span id="api-test-res"></span><p class="description">Stored securely. <?= $db_key?'Leave stars to keep.':''?></p><?php endif;?></td></tr>
     <tr><th><label for="f_ctx">Summary Prompt</label></th><td><textarea id="f_ctx" name="<?=esc_attr(SUMAI_SETTINGS_OPTION)?>[context_prompt]" rows="3" class="large-text"><?=esc_textarea($opts['context_prompt'])?></textarea></td></tr>
     <tr><th><label for="f_ttl">Title Prompt</label></th><td><textarea id="f_ttl" name="<?=esc_attr(SUMAI_SETTINGS_OPTION)?>[title_prompt]" rows="2" class="large-text"><?=esc_textarea($opts['title_prompt'])?></textarea></td></tr>
     <tr><th>Status</th><td><fieldset><label><input type="radio" name="<?=esc_attr(SUMAI_SETTINGS_OPTION)?>[draft_mode]" value="0" <?php checked(0,$opts['draft_mode'])?>> Publish</label> <label><input type="radio" name="<?=esc_attr(SUMAI_SETTINGS_OPTION)?>[draft_mode]" value="1" <?php checked(1,$opts['draft_mode'])?>> Draft</label></fieldset></td></tr>
@@ -386,7 +338,7 @@ function sumai_render_settings_page() {
 }
 
 /* -------------------------------------------------------------------------
- * 9. AJAX HANDLERS
+ * 9. AJAX HANDLERS (Restored)
  * ------------------------------------------------------------------------- */
 
 add_action('wp_ajax_sumai_test_api_key', 'sumai_ajax_test_api_key');
@@ -405,25 +357,44 @@ function sumai_ajax_test_feeds() {
     check_ajax_referer('sumai_test_feeds_nonce'); if (!current_user_can('manage_options')) wp_send_json_error(['message'=>'Denied.'],403);
     $options = get_option(SUMAI_SETTINGS_OPTION, []); $urls = empty($options['feed_urls']) ? [] : array_slice(array_filter(array_map('trim',preg_split('/\r\n|\r|\n/',$options['feed_urls']))), 0, SUMAI_MAX_FEED_URLS);
     if (empty($urls)) { wp_send_json_error(['message'=>'No feeds configured.']); return; }
+    // Ensure feed functions are available for the test function itself
     if (!function_exists('fetch_feed')){ include_once ABSPATH.WPINC.'/feed.php'; if (!function_exists('fetch_feed')) { wp_send_json_error(['message'=>'WP feed functions unavailable.']); return; } }
     $output = sumai_test_feeds($urls); wp_send_json_success(['message'=>'<pre>'.esc_html($output).'</pre>']);
 }
 
 /* -------------------------------------------------------------------------
- * 10. LOGGING & DEBUGGING
+ * 10. LOGGING & DEBUGGING (Restored fuller versions)
  * ------------------------------------------------------------------------- */
 
 function sumai_test_feeds(array $feed_urls): string {
-    if (!function_exists('fetch_feed')) return "Error: fetch_feed() unavailable.";
-    $out = "--- Feed Test Results ---\nTime: ".wp_date('Y-m-d H:i:s T')."\n"; $guids = get_option(SUMAI_PROCESSED_GUIDS_OPTION, []); $out .= count($guids)." processed GUIDs.\n\n"; $new_found = false; $items_total = 0; $new_total = 0;
+    // Note: fetch_feed check is done in the AJAX handler before calling this
+    if (!function_exists('fetch_feed')) return "Error: fetch_feed() unavailable in test function.";
+
+    $out = "--- Feed Test Results ---\nTime: ".wp_date('Y-m-d H:i:s T')."\n";
+    $guids = get_option(SUMAI_PROCESSED_GUIDS_OPTION, []); $out .= count($guids)." processed GUIDs tracked.\n\n";
+    $new_found = false; $items_total = 0; $new_total = 0;
+
     foreach ($feed_urls as $i => $url) {
-        $out .= "--- Feed #".($i+1).": {$url} ---\n"; wp_feed_cache_transient_lifetime(0); $feed = fetch_feed($url); wp_feed_cache_transient_lifetime(HOUR_IN_SECONDS);
+        $out .= "--- Feed #".($i+1).": {$url} ---\n";
+        // ** REMOVED Cache Lifetime Manipulation **
+        $feed = fetch_feed($url);
+        // ** REMOVED Cache Lifetime Restoration **
+
         if (is_wp_error($feed)) { $out .= "❌ Error: ".esc_html($feed->get_error_message())."\n\n"; continue; }
         $items = $feed->get_items(0, SUMAI_FEED_ITEM_LIMIT); $count = count($items); $items_total += $count;
-        if (empty($items)) { $out .= "⚠️ OK but no items.\n\n"; continue; } $out .= "✅ OK: {$count} items:\n"; $feed_new = false;
-        foreach ($items as $idx => $item) { $guid = $item->get_id(true); $title = mb_strimwidth(strip_tags($item->get_title()?:'N/A'),0,80,'...'); $out .= "- Item ".($idx+1).": ".esc_html($title)."\n"; if (isset($guids[$guid])) $out .= "  Status: Processed\n"; else { $out .= "  Status: ✨ NEW\n"; $feed_new = true; $new_found = true; $new_total++; } }
-        if (!$feed_new && $count > 0) $out .= "  ℹ️ No new items.\n"; $out .= "\n"; unset($feed, $items);
-    } $out .= "--- Summary ---\nChecked ".count($feed_urls)." feeds, {$items_total} items.\n".($new_found?"✅ Detected {$new_total} NEW items.":"ℹ️ No new content detected."); return $out;
+        if (empty($items)) { $out .= "⚠️ OK but no items found (limit ".SUMAI_FEED_ITEM_LIMIT.").\n\n"; continue; }
+        $out .= "✅ OK. Found {$count} items:\n"; $feed_new = false;
+        foreach ($items as $idx => $item) {
+            $guid = $item->get_id(true); $title = mb_strimwidth(strip_tags($item->get_title()?:'N/A'),0,80,'...');
+            $out .= "- Item ".($idx+1).": ".esc_html($title)."\n";
+            if (isset($guids[$guid])) $out .= "  Status: Processed\n";
+            else { $out .= "  Status: ✨ NEW\n"; $feed_new = true; $new_found = true; $new_total++; }
+        }
+        if (!$feed_new && $count > 0) $out .= "  ℹ️ No new items in latest checked.\n"; $out .= "\n";
+        unset($feed, $items);
+    }
+    $out .= "--- Summary ---\nChecked ".count($feed_urls)." feeds, {$items_total} items total.\n";
+    $out .= $new_found ? "✅ Detected {$new_total} NEW items." : "ℹ️ No new content detected."; return $out;
 }
 
 function sumai_ensure_log_dir(): ?string {
@@ -432,7 +403,7 @@ function sumai_ensure_log_dir(): ?string {
     if(!is_writable($dir))return null; if(!file_exists($file)){if(false===@file_put_contents($file,''))return null; @chmod($file,0644);} if(!is_writable($file))return null; return $path=$file;
 }
 function sumai_log_event(string $msg, bool $is_error=false) { $file=sumai_ensure_log_dir(); if(!$file){error_log("Sumai ".($is_error?'[ERR]':'[INFO]')."(Log N/A): ".$msg); return;} $ts=wp_date('Y-m-d H:i:s T'); $lvl=$is_error?' [ERROR] ':' [INFO]  '; $line='['.$ts.']'.$lvl.trim(preg_replace('/\s+/',' ',wp_strip_all_tags($msg))).PHP_EOL; @file_put_contents($file,$line,FILE_APPEND|LOCK_EX); }
-function sumai_prune_logs() { $file=sumai_ensure_log_dir(); if(!$file||!is_readable($file)||!is_writable($file)) return; $lines=@file($file,FILE_IGNORE_NEW_LINES|FILE_SKIP_EMPTY_LINES); if(empty($lines))return; $cutoff=time()-SUMAI_LOG_TTL; $keep=[]; $pruned=0; foreach($lines as $line){$ts=false; if(preg_match('/^\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} [A-Z\/+-\w\:]+)\]/',$line,$m)){try{$dt=new DateTime($m[1]);$ts=$dt->getTimestamp();}catch(Exception $e){$ts=strtotime($m[1]);}} if($ts!==false&&$ts>=$cutoff)$keep[]=$line; else $pruned++;} if($pruned>0){$new_content=empty($keep)?'':implode(PHP_EOL,$keep).PHP_EOL; @file_put_contents($file,$new_content,LOCK_EX); } }
+function sumai_prune_logs() { $days=SUMAI_LOG_TTL/DAY_IN_SECONDS; sumai_log_event("Running log pruning (keep {$days}d)..."); $file=sumai_ensure_log_dir(); if(!$file||!is_readable($file)||!is_writable($file)){return;} $lines=@file($file,FILE_IGNORE_NEW_LINES|FILE_SKIP_EMPTY_LINES); if(empty($lines)){return;} $cutoff=time()-SUMAI_LOG_TTL; $keep=[]; $pruned=0; $total=count($lines); foreach($lines as $line){$ts=false; if(preg_match('/^\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} [A-Z\/+-\w\:]+)\]/',$line,$m)){try{$dt=new DateTime($m[1]);$ts=$dt->getTimestamp();}catch(Exception $e){$ts=strtotime($m[1]);}} if($ts!==false&&$ts>=$cutoff)$keep[]=$line; else $pruned++;} if($pruned>0){$new_content=empty($keep)?'':implode(PHP_EOL,$keep).PHP_EOL; @file_put_contents($file,$new_content,LOCK_EX); } }
 
 function sumai_get_debug_info(): array {
     $dbg = []; $opts = get_option(SUMAI_SETTINGS_OPTION, []); $dbg['settings'] = $opts; $dbg['settings']['api_key'] = (defined('SUMAI_OPENAI_API_KEY')&&!empty(SUMAI_OPENAI_API_KEY))?'*** Constant ***':(!empty($opts['api_key'])?'*** DB Set ***':'*** Not Set ***');
