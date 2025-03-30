@@ -3,7 +3,7 @@
  * Plugin Name: Sumai
  * Plugin URI:  https://biglife360.com/sumai
  * Description: Fetches RSS articles, summarizes with OpenAI, and posts a daily summary.
- * Version:     1.2.6
+ * Version:     1.2.7
  * Author:      biglife360.com
  * Author URI:  https://biglife360.com
  * License:     GPL2
@@ -40,7 +40,7 @@ register_deactivation_hook( __FILE__, 'sumai_deactivate' );
 function sumai_activate() {
     $defaults = [
         'feed_urls' => '', 'context_prompt' => "Summarize the key points concisely.",
-        'title_prompt' => "Generate a compelling title.", 'api_key' => '', 'draft_mode' => 0,
+        'title_prompt' => "Generate a compelling and unique title.", 'api_key' => '', 'draft_mode' => 0,
         'schedule_time' => '03:00', 'post_signature' => ''
     ];
     add_option( SUMAI_SETTINGS_OPTION, $defaults, '', 'no' );
@@ -120,7 +120,7 @@ function sumai_check_external_trigger() {
 
 function sumai_generate_daily_summary( bool $force_fetch = false ) {
 
-    // Note: No wp-load.php include here. We load post.php JIT before wp_insert_post.
+    // No initial includes here. We load JIT before wp_insert_post.
 
     sumai_log_event('Starting summary generation job.'.($force_fetch ? ' (Forced)' : ''));
     $options = get_option(SUMAI_SETTINGS_OPTION, []);
@@ -143,7 +143,7 @@ function sumai_generate_daily_summary( bool $force_fetch = false ) {
 
         sumai_log_event('Preparing to create post...');
 
-        // Use the raw title directly, removing potential quotes
+        // Use the raw title directly
         $clean_title = trim($summary_result['title'], '"\' ');
         $post_title_to_use = $clean_title;
 
@@ -151,9 +151,7 @@ function sumai_generate_daily_summary( bool $force_fetch = false ) {
         if (!function_exists('get_userdata')) {
              sumai_log_event('get_userdata() missing. Loading user.php...');
              require_once ABSPATH . WPINC . '/user.php';
-             if (!function_exists('get_userdata')) {
-                  sumai_log_event('FATAL: Failed loading user.php!', true); return false;
-             }
+             if (!function_exists('get_userdata')) { sumai_log_event('FATAL: Failed loading user.php!', true); return false; }
         }
 
         $author_id = (is_user_logged_in() && function_exists('get_current_user_id') && ($uid = get_current_user_id()) > 0) ? $uid : 1;
@@ -163,14 +161,7 @@ function sumai_generate_daily_summary( bool $force_fetch = false ) {
             if (!$author || !$author->has_cap('publish_posts')) { sumai_log_event("Error: Author ID {$author_id} invalid/cannot publish.", true); return false; }
         }
 
-        $post_data = [
-            'post_title'   => $post_title_to_use, // Use the potentially non-unique title
-            'post_content' => $summary_result['content'],
-            'post_status'  => ($options['draft_mode'] ?? 0) ? 'draft' : 'publish',
-            'post_type'    => 'post',
-            'post_author'  => $author_id,
-            'meta_input'   => ['_sumai_generated' => true]
-        ];
+        $post_data = ['post_title'=>$post_title_to_use, 'post_content'=>$summary_result['content'], 'post_status'=>($options['draft_mode']??0)?'draft':'publish', 'post_type'=>'post', 'post_author'=>$author_id, 'meta_input'=>['_sumai_generated'=>true]];
 
         // --- Load post.php JUST BEFORE wp_insert_post ---
         if (!function_exists('wp_insert_post')) {
@@ -178,9 +169,7 @@ function sumai_generate_daily_summary( bool $force_fetch = false ) {
              sumai_log_event('Loading post.php JIT before insert from: ' . $post_file);
              if (file_exists($post_file)) {
                  require_once $post_file;
-                 if (!function_exists('wp_insert_post')) {
-                     sumai_log_event('FATAL: Failed loading wp_insert_post after require!', true); return false;
-                 }
+                 if (!function_exists('wp_insert_post')) { sumai_log_event('FATAL: Failed loading wp_insert_post after require!', true); return false; }
              } else { sumai_log_event('FATAL: post.php not found!', true); return false; }
         }
         // --- End Load ---
@@ -211,7 +200,7 @@ function sumai_fetch_new_articles_content( array $feed_urls, bool $force_fetch =
     if (!function_exists('fetch_feed')) { include_once ABSPATH.WPINC.'/feed.php'; }
     if (!function_exists('fetch_feed')) { sumai_log_event('Error: fetch_feed unavailable.', true); return ['', []]; }
     $content = ''; $new_guids = []; $now = time(); $char_count = 0; $processed = get_option(SUMAI_PROCESSED_GUIDS_OPTION, []);
-    foreach ($feed_urls as $url) { $url = esc_url_raw(trim($url)); if (empty($url)) continue; $feed = fetch_feed($url); if (is_wp_error($feed)) { sumai_log_event("Err fetch {$url}: ".$feed->get_error_message(), true); continue; } $items = $feed->get_items(0, SUMAI_FEED_ITEM_LIMIT); if (empty($items)) continue; $added = 0; foreach ($items as $item) { $guid = $item->get_id(true); if (isset($new_guids[$guid]) || (!$force_fetch && isset($processed[$guid]))) continue; $text = trim(preg_replace('/\s+/',' ',wp_strip_all_tags($item->get_content()?:$item->get_description()))); if (empty($text)) continue; $ft = $feed->get_title()?:parse_url($url, PHP_URL_HOST); $it = strip_tags($item->get_title()?:'Untitled'); $ic = "Source: ".esc_html($ft)."\nTitle: ".esc_html($it)."\nContent:\n".$text."\n\n---\n\n"; $il = mb_strlen($ic); if (($char_count+$il) > SUMAI_MAX_INPUT_CHARS) { break; } $content .= $ic; $char_count += $il; $new_guids[$guid] = $now; $added++; } unset($feed, $items); } return [$content, $new_guids];
+    foreach ($feed_urls as $url) { $url = esc_url_raw(trim($url)); if (empty($url)) continue; $feed = fetch_feed($url); if (is_wp_error($feed)) { sumai_log_event("Err fetch {$url}: ".$feed->get_error_message(), true); continue; } $items = $feed->get_items(0, SUMAI_FEED_ITEM_LIMIT); if (empty($items)) continue; $added = 0; foreach ($items as $item) { $guid = $item->get_id(true); if (isset($new_guids[$guid]) || (!$force_fetch && isset($processed[$guid]))) continue; $text = trim(preg_replace('/\s+/',' ',wp_strip_all_tags($item->get_content()?:$item->get_description()))); if (empty($text)) continue; $ft = $feed->get_title()?:parse_url($url, PHP_URL_HOST); $it = strip_tags($item->get_title()?:'Untitled'); $ic = "Source: ".esc_html($ft)."\nTitle: ".esc_html($it)."\nContent:\n".$text."\n\n---\n\n"; $il = mb_strlen($ic); if (($char_count+$il) > SUMAI_MAX_INPUT_CHARS) { break; } $content .= $ic; $char_count += $il; $new_guids[$guid] = $now; $added++; } unset($feed,$items); } return [$content, $new_guids];
 }
 
 /* -------------------------------------------------------------------------
@@ -247,8 +236,7 @@ add_action('admin_menu', 'sumai_add_admin_menu'); add_action('admin_init', 'suma
 function sumai_add_admin_menu() { add_options_page('Sumai Settings', 'Sumai', 'manage_options', 'sumai-settings', 'sumai_render_settings_page'); }
 function sumai_register_settings() { register_setting('sumai_options_group', SUMAI_SETTINGS_OPTION, 'sumai_sanitize_settings'); }
 
-function sumai_sanitize_settings($input): array { $s=[];$c=get_option(SUMAI_SETTINGS_OPTION,[]);$ce=$c['api_key']??'';$vu=[];if(isset($input['feed_urls'])){$us=array_map('trim',preg_split('/\r\n|\r|\n/',sanitize_textarea_field($input['feed_urls'])));foreach($us as $u){if(!empty($u)&&filter_var($u,FILTER_VALIDATE_URL)&&preg_match('/^https?:\/\//',$u))$vu[]=$u;}$vu=array_slice($vu,0,SUMAI_MAX_FEED_URLS);}$s['feed_urls']=implode("\n",$vu);$s['context_prompt']=isset($input['context_prompt'])?sanitize_textarea_field($input['context_prompt']):'';$s['title_prompt']=isset($input['title_prompt'])?sanitize_textarea_field($input['title_prompt']):'';$s['draft_mode']=(isset($input['draft_mode'])&&$input['draft_mode']=='1')?1:0;$s['post_signature']=isset($input['post_signature'])?wp_kses_post($input['post_signature']):'';$t=isset($input['schedule_time'])?sanitize_text_field($input['schedule_time']):'03:00';$s['schedule_time']=preg_match('/^([01]?\d|2[0-3]):([0-5]\d)$/',$t)?$t:($c['schedule_time']??'03:00');
-if(defined('SUMAI_OPENAI_API_KEY')&&!empty(SUMAI_OPENAI_API_KEY)){$s['api_key']=$ce;}elseif(isset($input['api_key'])){$ni=sanitize_text_field(trim($input['api_key']));if($ni==='********************')$s['api_key']=$ce;elseif(empty($ni)){$s['api_key']='';if(!empty($ce))sumai_log_event('API key cleared.');}else{if(function_exists('openssl_encrypt')&&defined('AUTH_KEY')&&AUTH_KEY){$cp='aes-256-cbc';$il=openssl_cipher_iv_length($cp);if($il!==false){$iv=openssl_random_pseudo_bytes($il);$en=openssl_encrypt($ni,$cp,AUTH_KEY,OPENSSL_RAW_DATA,$iv);if($en!==false&&$iv!==false){$ne=base64_encode($iv.$en);if($ne!==$ce)sumai_log_event('API key saved.');$s['api_key']=$ne;}else{$s['api_key']=$ce;}}else $s['api_key']=$ce;}else $s['api_key']=$ce;}}else $s['api_key']=$ce; return $s;}
+function sumai_sanitize_settings($input): array { $s=[];$c=get_option(SUMAI_SETTINGS_OPTION,[]);$ce=$c['api_key']??'';$vu=[];if(isset($input['feed_urls'])){$us=array_map('trim',preg_split('/\r\n|\r|\n/',sanitize_textarea_field($input['feed_urls'])));foreach($us as $u){if(!empty($u)&&filter_var($u,FILTER_VALIDATE_URL)&&preg_match('/^https?:\/\//',$u))$vu[]=$u;}$vu=array_slice($vu,0,SUMAI_MAX_FEED_URLS);}$s['feed_urls']=implode("\n",$vu);$s['context_prompt']=isset($input['context_prompt'])?sanitize_textarea_field($input['context_prompt']):'';$s['title_prompt']=isset($input['title_prompt'])?sanitize_textarea_field($input['title_prompt']):'';$s['draft_mode']=(isset($input['draft_mode'])&&$input['draft_mode']=='1')?1:0;$s['post_signature']=isset($input['post_signature'])?wp_kses_post($input['post_signature']):'';$t=isset($input['schedule_time'])?sanitize_text_field($input['schedule_time']):'03:00';$s['schedule_time']=preg_match('/^([01]?\d|2[0-3]):([0-5]\d)$/',$t)?$t:($c['schedule_time']??'03:00'); if(defined('SUMAI_OPENAI_API_KEY')&&!empty(SUMAI_OPENAI_API_KEY)){$s['api_key']=$ce;}elseif(isset($input['api_key'])){$ni=sanitize_text_field(trim($input['api_key']));if($ni==='********************')$s['api_key']=$ce;elseif(empty($ni)){$s['api_key']='';if(!empty($ce))sumai_log_event('API key cleared.');}else{if(function_exists('openssl_encrypt')&&defined('AUTH_KEY')&&AUTH_KEY){$cp='aes-256-cbc';$il=openssl_cipher_iv_length($cp);if($il!==false){$iv=openssl_random_pseudo_bytes($il);$en=openssl_encrypt($ni,$cp,AUTH_KEY,OPENSSL_RAW_DATA,$iv);if($en!==false&&$iv!==false){$ne=base64_encode($iv.$en);if($ne!==$ce)sumai_log_event('API key saved.');$s['api_key']=$ne;}else{$s['api_key']=$ce;}}else $s['api_key']=$ce;}else $s['api_key']=$ce;}}else $s['api_key']=$ce; return $s;}
 
 function sumai_render_settings_page() {
     if (!current_user_can('manage_options')) return;
@@ -261,7 +249,7 @@ function sumai_render_settings_page() {
     <tr><th><label for="f_urls">Feed URLs</label></th><td><textarea id="f_urls" name="<?= esc_attr(SUMAI_SETTINGS_OPTION) ?>[feed_urls]" rows="3" class="large-text"><?= esc_textarea($opts['feed_urls']) ?></textarea><p>Max <?= SUMAI_MAX_FEED_URLS ?> feeds.</p></td></tr>
     <tr><th><label for="f_key">API Key</label></th><td><?php if($const_key):?><input type="text" value="<?=esc_attr($api_disp)?>" readonly disabled/><p>Defined in wp-config.</p><?php else:?><input type="password" id="f_key" name="<?=esc_attr(SUMAI_SETTINGS_OPTION)?>[api_key]" value="<?=esc_attr($api_disp)?>" placeholder="<?= $db_key?'Update':'Enter Key' ?>"/><button type="button" id="test-api-btn" class="button">Test</button><span id="api-test-res"></span><p><?= $db_key?'Leave stars to keep.':''?></p><?php endif;?></td></tr>
     <tr><th><label for="f_ctx">Summary Prompt</label></th><td><textarea id="f_ctx" name="<?=esc_attr(SUMAI_SETTINGS_OPTION)?>[context_prompt]" rows="3" class="large-text"><?=esc_textarea($opts['context_prompt'])?></textarea></td></tr>
-    <tr><th><label for="f_ttl">Title Prompt</label></th><td><textarea id="f_ttl" name="<?=esc_attr(SUMAI_SETTINGS_OPTION)?>[title_prompt]" rows="2" class="large-text"><?=esc_textarea($opts['title_prompt'])?></textarea><p class="description">Ask AI to make it unique.</p></td></tr>
+    <tr><th><label for="f_ttl">Title Prompt</label></th><td><textarea id="f_ttl" name="<?=esc_attr(SUMAI_SETTINGS_OPTION)?>[title_prompt]" rows="2" class="large-text"><?=esc_textarea($opts['title_prompt'])?></textarea><p class="description">Tip: Ask AI to generate a unique title.</p></td></tr> {/* UX Change */}
     <tr><th>Status</th><td><fieldset><label><input type="radio" name="<?=esc_attr(SUMAI_SETTINGS_OPTION)?>[draft_mode]" value="0" <?php checked(0,$opts['draft_mode'])?>> Publish</label> <label><input type="radio" name="<?=esc_attr(SUMAI_SETTINGS_OPTION)?>[draft_mode]" value="1" <?php checked(1,$opts['draft_mode'])?>> Draft</label></fieldset></td></tr>
     <tr><th><label for="f_time">Schedule Time</label></th><td><input type="time" id="f_time" name="<?=esc_attr(SUMAI_SETTINGS_OPTION)?>[schedule_time]" value="<?=esc_attr($opts['schedule_time'])?>" required pattern="([01]?\d|2[0-3]):[0-5]\d"/><p>Daily (HH:MM). TZ: <strong><?=esc_html(wp_timezone_string())?></strong>.<?php $next=wp_next_scheduled(SUMAI_CRON_HOOK); echo '<br>Next: '.($next?wp_date('Y-m-d H:i',$next):'N/A');?></p></td></tr>
     <tr><th><label for="f_sig">Signature</label></th><td><textarea id="f_sig" name="<?=esc_attr(SUMAI_SETTINGS_OPTION)?>[post_signature]" rows="3" class="large-text"><?=esc_textarea($opts['post_signature'])?></textarea></td></tr>
@@ -269,9 +257,8 @@ function sumai_render_settings_page() {
     <div id="tab-advanced" class="tab-content" style="display:none;"><h2>Advanced</h2><div class="card"><h3>Generate Now</h3><form method="post"><input type="submit" name="sumai_generate_now" class="button button-primary" value="Generate Now"><?php wp_nonce_field('sumai_generate_now_action');?></form></div><div class="card"><h3>Test Feeds</h3><button type="button" id="test-feed-btn" class="button">Test</button><div id="feed-test-res"></div></div><div class="card"><h3>External Cron</h3><?php $tok=get_option(SUMAI_CRON_TOKEN_OPTION); if($tok){$url=add_query_arg(['sumai_trigger'=>'1','token'=>$tok],site_url('/')); echo '<input type="text" value="'.esc_url($url).'" readonly onfocus="this.select();"><p><code>wget -qO- \''.esc_url($url).'\' > /dev/null</code></p>';} else echo '<p>Save settings.</p>';?></div></div>
     <div id="tab-debug" class="tab-content" style="display:none;"><h2>Debug</h2><?php sumai_render_debug_info();?></div></div></div>
     <style>.card{padding:15px;border:1px solid #ccc;background:#fff;margin:20px 0;}.nav-tab-wrapper{margin-bottom:20px;}#api-test-res,#feed-test-res{margin-left:10px;vertical-align:middle;}#feed-test-res{display:none;white-space:pre-wrap;font-family:monospace;max-height:300px;overflow-y:auto;background:#f9f9f9;padding:10px;border:1px solid #ccc;}</style>
-    <script type="text/javascript">jQuery(document).ready(function($){var $tabs=$('#sumai-tabs'),$links=$tabs.find('.nav-tab'),$content=$tabs.find('.tab-content');function showTab(h){h=h||localStorage.getItem('sumaiActiveTab')||$links.first().attr('href');$links.removeClass('nav-tab-active');$content.hide();var $link=$links.filter('[href="'+h+'"]');if(!$link.length){$link=$links.first();h=$link.attr('href');}$link.addClass('nav-tab-active');$(h).show();try{localStorage.setItem('sumaiActiveTab',h);}catch(e){}} $links.on('click',function(e){e.preventDefault();showTab($(this).attr('href'));});showTab(window.location.hash||localStorage.getItem('sumaiActiveTab'));
-    $('#test-api-btn').on('click',function(){var $b=$(this),$r=$('#api-test-res'),$k=$('#f_key'),t='';if($k.length)t=($k.val()==='********************')?'':$k.val();$b.prop('disabled',true).text('...');$r.html('<span class="spinner is-active"></span>').css('color','');$.post(ajaxurl,{action:'sumai_test_api_key',_ajax_nonce:'<?php echo wp_create_nonce('sumai_test_api_key_nonce');?>',api_key_to_test:t},function(r){$r.html((r.success?'✅ ':'❌ ')+r.data.message).css('color',r.success?'green':'#d63638');},'json').fail(function(){$r.html('❌ AJAX Error');}).always(function(){$b.prop('disabled',false).text('Test');});});
-    $('#test-feed-btn').on('click',function(){var $b=$(this),$r=$('#feed-test-res');$b.prop('disabled',true).text('...');$r.html('<span class="spinner is-active"></span>').css('color','').show();$.post(ajaxurl,{action:'sumai_test_feeds',_ajax_nonce:'<?php echo wp_create_nonce('sumai_test_feeds_nonce');?>'},function(r){if(r.success)$r.html(r.data.message).css('color','');else $r.html('❌ Error: '+r.data.message).css('color','#d63638');},'json').fail(function(){$r.html('❌ AJAX Error');}).always(function(){$b.prop('disabled',false).text('Test');});});});</script>
+    {/* Restored AJAX JavaScript */}
+    <script type="text/javascript">jQuery(document).ready(function($){var $tabs=$('#sumai-tabs'),$links=$tabs.find('.nav-tab'),$content=$tabs.find('.tab-content');function showTab(h){h=h||localStorage.getItem('sumaiActiveTab')||$links.first().attr('href');$links.removeClass('nav-tab-active');$content.hide();var $link=$links.filter('[href="'+h+'"]');if(!$link.length){$link=$links.first();h=$link.attr('href');}$link.addClass('nav-tab-active');$(h).show();try{localStorage.setItem('sumaiActiveTab',h);}catch(e){}} $links.on('click',function(e){e.preventDefault();showTab($(this).attr('href'));});showTab(window.location.hash||localStorage.getItem('sumaiActiveTab')); $('#test-api-btn').on('click',function(){var $b=$(this),$r=$('#api-test-res'),$k=$('#f_key'),t='';if($k.length)t=($k.val()==='********************')?'':$k.val();$b.prop('disabled',true).text('...');$r.html('<span class="spinner is-active"></span>').css('color','');$.post(ajaxurl,{action:'sumai_test_api_key',_ajax_nonce:'<?php echo wp_create_nonce('sumai_test_api_key_nonce');?>',api_key_to_test:t},function(r){$r.html((r.success?'✅ ':'❌ ')+r.data.message).css('color',r.success?'green':'#d63638');},'json').fail(function(){$r.html('❌ AJAX Error');}).always(function(){$b.prop('disabled',false).text('Test');});}); $('#test-feed-btn').on('click',function(){var $b=$(this),$r=$('#feed-test-res');$b.prop('disabled',true).text('...');$r.html('<span class="spinner is-active"></span>').css('color','').show();$.post(ajaxurl,{action:'sumai_test_feeds',_ajax_nonce:'<?php echo wp_create_nonce('sumai_test_feeds_nonce');?>'},function(r){if(r.success)$r.html(r.data.message).css('color','');else $r.html('❌ Error: '+r.data.message).css('color','#d63638');},'json').fail(function(){$r.html('❌ AJAX Error');}).always(function(){$b.prop('disabled',false).text('Test');});});});</script>
     <?php
 }
 
@@ -290,12 +277,12 @@ function sumai_ajax_test_feeds() { check_ajax_referer('sumai_test_feeds_nonce');
  * ------------------------------------------------------------------------- */
 
 function sumai_test_feeds(array $feed_urls): string { if (!function_exists('fetch_feed')) return "Error: fetch_feed unavailable."; $out = "--- Feed Test Results ---\nTime: ".wp_date('Y-m-d H:i:s T')."\n"; $guids = get_option(SUMAI_PROCESSED_GUIDS_OPTION, []); $out .= count($guids)." processed GUIDs.\n\n"; $new=false; $items_total=0; $new_total=0; foreach ($feed_urls as $i=>$url) { $out .= "--- Feed #".($i+1).": {$url} ---\n"; $feed = fetch_feed($url); if (is_wp_error($feed)) { $out .= "❌ Err: ".esc_html($feed->get_error_message())."\n\n"; continue; } $items = $feed->get_items(0, SUMAI_FEED_ITEM_LIMIT); $count = count($items); $items_total += $count; if (empty($items)) { $out .= "⚠️ OK but no items.\n\n"; continue; } $out .= "✅ OK: {$count} items:\n"; $feed_new = false; foreach ($items as $idx => $item) { $guid = $item->get_id(true); $title = mb_strimwidth(strip_tags($item->get_title()?:'N/A'),0,80,'...'); $out .= "- ".($idx+1).": ".esc_html($title)."\n"; if (isset($guids[$guid])) $out .= "  Status: Processed\n"; else { $out .= "  Status: ✨ NEW\n"; $feed_new=true; $new=true; $new_total++; } } if (!$feed_new && $count>0) $out .= "  ℹ️ No new items.\n"; $out .= "\n"; unset($feed,$items); } $out .= "--- Summary ---\nChecked ".count($feed_urls)." feeds, {$items_total} items.\n".($new?"✅ Detected {$new_total} NEW items.":"ℹ️ No new content."); return $out; }
-function sumai_ensure_log_dir(): ?string { static $path=null,$chk=false; if($chk)return $path; $chk=true; $up=wp_upload_dir(); if(!empty($up['error']))return null; $dir=trailingslashit($up['basedir']).SUMAI_LOG_DIR_NAME; $file=trailingslashit($dir).SUMAI_LOG_FILE_NAME; if(!is_dir($dir)){if(!wp_mkdir_p($dir))return null; @file_put_contents($dir.'/.htaccess',"Options -Indexes\nDeny from all"); @file_put_contents($dir.'/index.php','<?php // Silence');} if(!is_writable($dir))return null; if(!file_exists($file)){if(false===@file_put_contents($file,''))return null; @chmod($file,0644);} if(!is_writable($file))return null; return $path=$file; }
-// ** Restored Log Event - Does NOT accept path argument **
+function sumai_ensure_log_dir(): ?string { static $p=null,$c=false; if($c)return $p; $c=true; $u=wp_upload_dir(); if(!empty($u['error']))return null; $d=trailingslashit($u['basedir']).SUMAI_LOG_DIR_NAME; $f=trailingslashit($d).SUMAI_LOG_FILE_NAME; if(!is_dir($d)){if(!wp_mkdir_p($d))return null; @file_put_contents($d.'/.htaccess',"Options -Indexes\nDeny from all"); @file_put_contents($d.'/index.php','<?php // Silence');} if(!is_writable($d))return null; if(!file_exists($f)){if(false===@file_put_contents($f,''))return null; @chmod($f,0644);} if(!is_writable($f))return null; return $p=$f; }
+// ** Restored Log Event - Calls ensure_log_dir internally **
 function sumai_log_event(string $msg, bool $is_error=false) { $file=sumai_ensure_log_dir(); if(!$file){error_log("Sumai ".($is_error?'[ERR]':'[INFO]')."(Log N/A): ".$msg); return;} $ts=wp_date('Y-m-d H:i:s T'); $lvl=$is_error?' [ERROR] ':' [INFO]  '; $line='['.$ts.']'.$lvl.trim(preg_replace('/\s+/',' ',wp_strip_all_tags($msg))).PHP_EOL; @file_put_contents($file,$line,FILE_APPEND|LOCK_EX); }
 function sumai_prune_logs() { $file=sumai_ensure_log_dir(); if(!$file||!is_readable($file)||!is_writable($file)) return; $lines=@file($file,4|2); if(empty($lines))return; $cutoff=time()-SUMAI_LOG_TTL; $keep=[]; $pruned=0; foreach($lines as $line){$ts=false; if(preg_match('/^\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} [A-Z\/+-\w\:]+)\]/',$line,$m)){try{$dt=new DateTime($m[1]);$ts=$dt->getTimestamp();}catch(Exception $e){$ts=strtotime($m[1]);}} if($ts!==false&&$ts>=$cutoff)$keep[]=$line; else $pruned++;} if($pruned>0){$new_content=empty($keep)?'':implode(PHP_EOL,$keep).PHP_EOL; @file_put_contents($file,$new_content,LOCK_EX); } }
 
-// ** Restored Debug Info Functions (More Robust) **
+// ** Restored Debug Info Functions **
 function sumai_get_debug_info(): array {
     $debug_info = []; $options = get_option(SUMAI_SETTINGS_OPTION, []); $debug_info['settings'] = $options; $debug_info['settings']['api_key'] = (defined('SUMAI_OPENAI_API_KEY')&&!empty(SUMAI_OPENAI_API_KEY))?'*** Constant ***':(!empty($options['api_key'])?'*** DB Set ***':'*** Not Set ***');
     $cron_jobs = _get_cron_array()?:[]; $debug_info['cron_jobs'] = []; $has_sumai_jobs = false; foreach ($cron_jobs as $time => $hooks) { foreach ([SUMAI_CRON_HOOK, SUMAI_ROTATE_TOKEN_HOOK, SUMAI_PRUNE_LOGS_HOOK] as $hook_name) { if (isset($hooks[$hook_name])) { $has_sumai_jobs = true; $event_key = key($hooks[$hook_name]); $schedule_details = $hooks[$hook_name][$event_key]; $schedule_name = $schedule_details['schedule'] ?? '(One-off?)'; $interval = isset($schedule_details['interval']) ? ($schedule_details['interval'] . 's') : 'N/A'; $debug_info['cron_jobs'][$hook_name] = ['next_run_gmt' => gmdate('Y-m-d H:i:s', $time), 'next_run_site' => wp_date('Y-m-d H:i:s T', $time), 'schedule_name' => $schedule_name, 'interval' => $interval ]; } } } if (!$has_sumai_jobs) $debug_info['cron_jobs'] = 'No Sumai tasks scheduled.';
