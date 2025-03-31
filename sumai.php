@@ -200,7 +200,66 @@ function sumai_fetch_new_articles_content( array $feed_urls, bool $force_fetch =
     if (!function_exists('fetch_feed')) { include_once ABSPATH.WPINC.'/feed.php'; }
     if (!function_exists('fetch_feed')) { sumai_log_event('Error: fetch_feed unavailable.', true); return ['', []]; }
     $content = ''; $new_guids = []; $now = time(); $char_count = 0; $processed = get_option(SUMAI_PROCESSED_GUIDS_OPTION, []);
-    foreach ($feed_urls as $url) { $url = esc_url_raw(trim($url)); if (empty($url)) continue; $feed = fetch_feed($url); if (is_wp_error($feed)) { sumai_log_event("Err fetch {$url}: ".$feed->get_error_message(), true); continue; } $items = $feed->get_items(0, SUMAI_FEED_ITEM_LIMIT); if (empty($items)) continue; $added = 0; foreach ($items as $item) { $guid = $item->get_id(true); if (isset($new_guids[$guid]) || (!$force_fetch && isset($processed[$guid]))) continue; $text = trim(preg_replace('/\s+/',' ',wp_strip_all_tags($item->get_content()?:$item->get_description()))); if (empty($text)) continue; $ft = $feed->get_title()?:parse_url($url, PHP_URL_HOST); $it = strip_tags($item->get_title()?:'Untitled'); $ic = "Source: ".esc_html($ft)."\nTitle: ".esc_html($it)."\nContent:\n".$text."\n\n---\n\n"; $il = mb_strlen($ic); if (($char_count+$il) > SUMAI_MAX_INPUT_CHARS) { break; } $content .= $ic; $char_count += $il; $new_guids[$guid] = $now; $added++; } unset($feed,$items); } return [$content, $new_guids];
+    foreach ($feed_urls as $url) { 
+        $url = esc_url_raw(trim($url)); 
+        if (empty($url)) continue; 
+
+        // --- OPTIMIZATION: Check character count *before* fetching the feed --- 
+        if ($char_count >= SUMAI_MAX_INPUT_CHARS) {
+             sumai_log_event('Character limit reached (/'.SUMAI_MAX_INPUT_CHARS.'), skipping remaining feeds.'); 
+             break; // Exit the outer loop entirely, no need to fetch more feeds
+        }
+        // --- END OPTIMIZATION ---
+
+        $feed = fetch_feed($url); 
+        if (is_wp_error($feed)) { 
+            sumai_log_event("Err fetch {$url}: ".$feed->get_error_message(), true); 
+            continue; 
+        } 
+        $items = $feed->get_items(0, SUMAI_FEED_ITEM_LIMIT); 
+        if (empty($items)) { 
+            // Optional: Log if a feed returns no items
+            // sumai_log_event("Feed {$url} returned no items.");
+            unset($feed); // Clean up feed object
+            continue; 
+        }
+        $added = 0; 
+        $feed_title = $feed->get_title() ?: parse_url($url, PHP_URL_HOST); // Get feed title once
+        foreach ($items as $item) { 
+            $guid = $item->get_id(true); 
+            // Optimization: Combine GUID checks for slightly better readability
+            if (isset($new_guids[$guid]) || (!$force_fetch && isset($processed[$guid]))) { 
+                continue; 
+            }
+            
+            $text_content = $item->get_content() ?: $item->get_description();
+            if (empty($text_content)) continue; // Skip if no content or description
+
+            $text = trim(preg_replace('/\s+/s', ' ', wp_strip_all_tags($text_content))); // Added /s modifier for newline handling
+            if (empty($text)) continue; // Skip if content becomes empty after stripping tags
+            
+            $item_title = strip_tags($item->get_title() ?: 'Untitled'); 
+            $item_source_info = "Source: ".esc_html($feed_title)."\nTitle: ".esc_html($item_title)."\nContent:\n";
+            $formatted_content = $item_source_info . $text . "\n\n---\n\n";
+            
+            $content_length = mb_strlen($formatted_content);
+            
+            // Check if adding this item exceeds the limit
+            if (($char_count + $content_length) > SUMAI_MAX_INPUT_CHARS) { 
+                 sumai_log_event("Character limit reached while processing item '".esc_html($item_title)."' from feed '".esc_html($feed_title)."'. Processed chars: {$char_count}/".SUMAI_MAX_INPUT_CHARS); 
+                 break; // Stop processing items for *this* feed
+            } 
+            
+            // Append content and update counts/GUIDs
+            $content .= $formatted_content; 
+            $char_count += $content_length; 
+            $new_guids[$guid] = $now; 
+            $added++; 
+        } 
+        unset($feed, $items, $feed_title); // Clean up variables for this feed
+    } 
+    sumai_log_event("Fetched content: " . $char_count . " characters, " . count($new_guids) . " new items."); // Log summary
+    return [$content, $new_guids];
 }
 
 /* -------------------------------------------------------------------------
@@ -236,7 +295,7 @@ add_action('admin_menu', 'sumai_add_admin_menu'); add_action('admin_init', 'suma
 function sumai_add_admin_menu() { add_options_page('Sumai Settings', 'Sumai', 'manage_options', 'sumai-settings', 'sumai_render_settings_page'); }
 function sumai_register_settings() { register_setting('sumai_options_group', SUMAI_SETTINGS_OPTION, 'sumai_sanitize_settings'); }
 
-function sumai_sanitize_settings($input): array { $s=[];$c=get_option(SUMAI_SETTINGS_OPTION,[]);$ce=$c['api_key']??'';$vu=[];if(isset($input['feed_urls'])){$us=array_map('trim',preg_split('/\r\n|\r|\n/',sanitize_textarea_field($input['feed_urls'])));foreach($us as $u){if(!empty($u)&&filter_var($u,FILTER_VALIDATE_URL)&&preg_match('/^https?:\/\//',$u))$vu[]=$u;}$vu=array_slice($vu,0,SUMAI_MAX_FEED_URLS);}$s['feed_urls']=implode("\n",$vu);$s['context_prompt']=isset($input['context_prompt'])?sanitize_textarea_field($input['context_prompt']):'';$s['title_prompt']=isset($input['title_prompt'])?sanitize_textarea_field($input['title_prompt']):'';$s['draft_mode']=(isset($input['draft_mode'])&&$input['draft_mode']=='1')?1:0;$s['post_signature']=isset($input['post_signature'])?wp_kses_post($input['post_signature']):'';$t=isset($input['schedule_time'])?sanitize_text_field($input['schedule_time']):'03:00';$s['schedule_time']=preg_match('/^([01]?\d|2[0-3]):([0-5]\d)$/',$t)?$t:($c['schedule_time']??'03:00'); if(defined('SUMAI_OPENAI_API_KEY')&&!empty(SUMAI_OPENAI_API_KEY)){$s['api_key']=$ce;}elseif(isset($input['api_key'])){$ni=sanitize_text_field(trim($input['api_key']));if($ni==='********************')$s['api_key']=$ce;elseif(empty($ni)){$s['api_key']='';if(!empty($ce))sumai_log_event('API key cleared.');}else{if(function_exists('openssl_encrypt')&&defined('AUTH_KEY')&&AUTH_KEY){$cp='aes-256-cbc';$il=openssl_cipher_iv_length($cp);if($il!==false){$iv=openssl_random_pseudo_bytes($il);$en=openssl_encrypt($ni,$cp,AUTH_KEY,OPENSSL_RAW_DATA,$iv);if($en!==false&&$iv!==false){$ne=base64_encode($iv.$en);if($ne!==$ce)sumai_log_event('API key saved.');$s['api_key']=$ne;}else{$s['api_key']=$ce;}}else $s['api_key']=$ce;}else $s['api_key']=$ce;}}else $s['api_key']=$ce; return $s;}
+function sumai_sanitize_settings($input): array { $s=[];$c=get_option(SUMAI_SETTINGS_OPTION,[]);$ce=$c['api_key']??'';$vu=[];if(isset($input['feed_urls'])){$us=array_map('trim',preg_split('/\r\n|\r|\n/',sanitize_textarea_field($input['feed_urls'])));foreach($us as $u){if(!empty($u)&&filter_var($u,FILTER_VALIDATE_URL)&&preg_match('/^https?:\/\//',$u))$vu[]=$u;}$vu=array_slice($vu,0,SUMAI_MAX_FEED_URLS);}$s['feed_urls']=implode("\n",$vu);$s['context_prompt']=isset($input['context_prompt'])?sanitize_textarea_field($input['context_prompt']):'';$s['title_prompt']=isset($input['title_prompt'])?sanitize_textarea_field($input['title_prompt']):'';$s['draft_mode']=(isset($input['draft_mode'])&&$input['draft_mode']=='1')?1:0;$s['post_signature']=isset($input['post_signature'])?wp_kses_post($input['post_signature']):'';$t=isset($input['schedule_time'])?sanitize_text_field($input['schedule_time']):'03:00';$s['schedule_time']=preg_match('/^([01]?\d|2[0-3]):([0-5]\d)$/',$t)?$t:($c['schedule_time']??'03:00'); if(defined('SUMAI_OPENAI_API_KEY')&&!empty(SUMAI_OPENAI_API_KEY)){$s['api_key']=$ce;}elseif(isset($input['api_key'])){$ni=sanitize_text_field(trim($input['api_key']));if($ni==='********************')$s['api_key']=$ce;elseif(empty($ni)){$s['api_key']='';if(!empty($ce))sumai_log_event('API key cleared.');}else{if(function_exists('openssl_encrypt')&&defined('AUTH_KEY')&&AUTH_KEY){$cp='aes-256-cbc';$il=openssl_cipher_iv_length($cp);if($il!==false){$iv=openssl_random_pseudo_bytes($il);$en=openssl_encrypt($ni,$cp,AUTH_KEY,OPENSSL_RAW_DATA,$iv);if($en!==false&&$iv!==false){$ne=base64_encode($iv.$en);if($ne!==$ce)sumai_log_event('API key saved.');$s['api_key']=$ne;}else{$s['api_key']=$ce;}}else $s['api_key']=$ce;}}else $s['api_key']=$ce; return $s;}
 
 function sumai_render_settings_page() {
     if (!current_user_can('manage_options')) return;
