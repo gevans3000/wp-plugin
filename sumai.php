@@ -336,21 +336,161 @@ function sumai_ajax_test_feeds() { check_ajax_referer('sumai_test_feeds_nonce');
  * ------------------------------------------------------------------------- */
 
 function sumai_test_feeds(array $feed_urls): string { if (!function_exists('fetch_feed')) return "Error: fetch_feed unavailable."; $out = "--- Feed Test Results ---\nTime: ".wp_date('Y-m-d H:i:s T')."\n"; $guids = get_option(SUMAI_PROCESSED_GUIDS_OPTION, []); $out .= count($guids)." processed GUIDs.\n\n"; $new=false; $items_total=0; $new_total=0; foreach ($feed_urls as $i=>$url) { $out .= "--- Feed #".($i+1).": {$url} ---\n"; $feed = fetch_feed($url); if (is_wp_error($feed)) { $out .= "❌ Err: ".esc_html($feed->get_error_message())."\n\n"; continue; } $items = $feed->get_items(0, SUMAI_FEED_ITEM_LIMIT); $count = count($items); $items_total += $count; if (empty($items)) { $out .= "⚠️ OK but no items.\n\n"; continue; } $out .= "✅ OK: {$count} items:\n"; $feed_new = false; foreach ($items as $idx => $item) { $guid = $item->get_id(true); $title = mb_strimwidth(strip_tags($item->get_title()?:'N/A'),0,80,'...'); $out .= "- ".($idx+1).": ".esc_html($title)."\n"; if (isset($guids[$guid])) $out .= "  Status: Processed\n"; else { $out .= "  Status: ✨ NEW\n"; $feed_new=true; $new=true; $new_total++; } } if (!$feed_new && $count>0) $out .= "  ℹ️ No new items.\n"; $out .= "\n"; unset($feed,$items); } $out .= "--- Summary ---\nChecked ".count($feed_urls)." feeds, {$items_total} items.\n".($new?"✅ Detected {$new_total} NEW items.":"ℹ️ No new content."); return $out; }
-function sumai_ensure_log_dir(): ?string { static $p=null,$c=false; if($c)return $p; $c=true; $u=wp_upload_dir(); if(!empty($u['error']))return null; $d=trailingslashit($u['basedir']).SUMAI_LOG_DIR_NAME; $f=trailingslashit($d).SUMAI_LOG_FILE_NAME; if(!is_dir($d)){if(!wp_mkdir_p($d))return null; @file_put_contents($d.'/.htaccess',"Options -Indexes\nDeny from all"); @file_put_contents($d.'/index.php','<?php // Silence');} if(!is_writable($d))return null; if(!file_exists($f)){if(false===@file_put_contents($f,''))return null; @chmod($f,0644);} if(!is_writable($f))return null; return $p=$f; }
-// ** Restored Log Event - Calls ensure_log_dir internally **
-function sumai_log_event(string $msg, bool $is_error=false) { $file=sumai_ensure_log_dir(); if(!$file){error_log("Sumai ".($is_error?'[ERR]':'[INFO]')."(Log N/A): ".$msg); return;} $ts=wp_date('Y-m-d H:i:s T'); $lvl=$is_error?' [ERROR] ':' [INFO]  '; $line='['.$ts.']'.$lvl.trim(preg_replace('/\s+/',' ',wp_strip_all_tags($msg))).PHP_EOL; @file_put_contents($file,$line,FILE_APPEND|LOCK_EX); }
-function sumai_prune_logs() { $file=sumai_ensure_log_dir(); if(!$file||!is_readable($file)||!is_writable($file)) return; $lines=@file($file,4|2); if(empty($lines))return; $cutoff=time()-SUMAI_LOG_TTL; $keep=[]; $pruned=0; foreach($lines as $line){$ts=false; if(preg_match('/^\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} [A-Z\/+-\w\:]+)\]/',$line,$m)){try{$dt=new DateTime($m[1]);$ts=$dt->getTimestamp();}catch(Exception $e){$ts=strtotime($m[1]);}} if($ts!==false&&$ts>=$cutoff)$keep[]=$line; else $pruned++;} if($pruned>0){$new_content=empty($keep)?'':implode(PHP_EOL,$keep).PHP_EOL; @file_put_contents($file,$new_content,LOCK_EX); } }
 
-// ** Restored Debug Info Functions **
+/**
+ * Reads the last N lines from a file.
+ *
+ * @param string $filepath Path to the file.
+ * @param int    $lines    Number of lines to read from the tail.
+ * @param int    $buffer   Buffer size for reading chunks.
+ * @return array Array of lines or an array with a single error message.
+ */
+function sumai_read_log_tail(string $filepath, int $lines = 50, int $buffer = 4096): array {
+    // Check if file exists and is readable before attempting to open
+    if (!file_exists($filepath) || !is_readable($filepath)) {
+        return ['Error: Log file does not exist or is not readable.'];
+    }
+
+    try {
+        $handle = @fopen($filepath, 'r');
+        if (!$handle) {
+            // Specific error if fopen fails despite readable check (e.g., open_basedir)
+            return ['Error: Could not open log file. Check server restrictions (e.g., open_basedir).'];
+        }
+
+        $line_counter = $lines;
+        $pos = -2;
+        $output = '';
+
+        // Attempt to seek to the end of the file
+        if (@fseek($handle, 0, SEEK_END) === -1) {
+            @fclose($handle);
+            return ['Error: Could not seek to end of log file.'];
+        }
+        $file_size = @ftell($handle);
+        if ($file_size === false) {
+            @fclose($handle);
+            return ['Error: Could not determine log file size.'];
+        }
+
+        // Read backwards chunk by chunk until enough lines are found or file start is reached
+        while ($line_counter > 0 && $file_size + $pos >= 0) {
+            $seek_pos = max(0, $file_size + $pos - $buffer); // Calculate position to seek to
+            $read_len = min($buffer, $file_size - $seek_pos); // Calculate bytes to read
+
+            if (@fseek($handle, $seek_pos, SEEK_SET) === -1) {
+                @fclose($handle);
+                return ['Error: Failed seeking backwards in log file.'];
+            }
+
+            $chunk = @fread($handle, $read_len);
+            if ($chunk === false) {
+                @fclose($handle);
+                return ['Error: Failed reading chunk from log file.'];
+            }
+
+            // Prepend the chunk to the output and count newlines
+            $output = $chunk . $output;
+            // Count lines found in the current output buffer
+            $line_counter = $lines - substr_count(rtrim($output, "\n"), "\n"); // rtrim ensures last line without newline is counted
+
+            // Move position backwards for the next iteration
+            $pos -= $read_len;
+
+            // Break if we've reached the beginning of the file
+            if ($seek_pos == 0) {
+                break;
+            }
+        }
+
+        @fclose($handle);
+
+        // Split the collected output into lines and return the tail
+        $log_lines = preg_split('/\r\n|\r|\n/', trim($output)); // Handles different newline types
+        return array_slice($log_lines, -$lines);
+
+    } catch (\Throwable $e) {
+        // Catch any unexpected errors during file operations
+        // Ensure handle is closed if it was opened
+        if (isset($handle) && is_resource($handle)) {
+            @fclose($handle);
+        }
+        // Provide a generic error message including the exception details
+        return ['Error: Exception during log reading - ' . esc_html($e->getMessage())];
+    }
+}
+
 function sumai_get_debug_info(): array {
     $debug_info = []; $options = get_option(SUMAI_SETTINGS_OPTION, []); $debug_info['settings'] = $options; $debug_info['settings']['api_key'] = (defined('SUMAI_OPENAI_API_KEY')&&!empty(SUMAI_OPENAI_API_KEY))?'*** Constant ***':(!empty($options['api_key'])?'*** DB Set ***':'*** Not Set ***');
-    $cron_jobs = _get_cron_array()?:[]; $debug_info['cron_jobs'] = []; $has_sumai_jobs = false; foreach ($cron_jobs as $time => $hooks) { foreach ([SUMAI_CRON_HOOK, SUMAI_ROTATE_TOKEN_HOOK, SUMAI_PRUNE_LOGS_HOOK] as $hook_name) { if (isset($hooks[$hook_name])) { $has_sumai_jobs = true; $event_key = key($hooks[$hook_name]); $schedule_details = $hooks[$hook_name][$event_key]; $schedule_name = $schedule_details['schedule'] ?? '(One-off?)'; $interval = isset($schedule_details['interval']) ? ($schedule_details['interval'] . 's') : 'N/A'; $debug_info['cron_jobs'][$hook_name] = ['next_run_gmt' => gmdate('Y-m-d H:i:s', $time), 'next_run_site' => wp_date('Y-m-d H:i:s T', $time), 'schedule_name' => $schedule_name, 'interval' => $interval ]; } } } if (!$has_sumai_jobs) $debug_info['cron_jobs'] = 'No Sumai tasks scheduled.';
-    $log_file = sumai_ensure_log_dir(); $debug_info['log_file_path'] = $log_file ?: 'ERROR: Log path fail.'; $debug_info['log_writable'] = $log_file && is_writable($log_file); $debug_info['log_readable'] = $log_file && is_readable($log_file); $debug_info['log_size_kb'] = ($debug_info['log_readable'] && file_exists($log_file)) ? round(filesize($log_file)/1024, 2) : 'N/A';
-    if ($debug_info['log_readable']) { $log_content = ($debug_info['log_size_kb'] > 0) ? @file_get_contents($log_file, false, null, -10240) : ''; $debug_info['recent_logs'] = ($log_content!==false)?array_slice(explode("\n", trim($log_content)), -50):['Error reading log.']; } else { $debug_info['recent_logs'] = ['Log not readable.']; }
+    $cron_jobs = _get_cron_array()?:[]; $debug_info['cron_jobs'] = []; $has_sumai_jobs = false; foreach ($cron_jobs as $time => $hooks) { foreach ([SUMAI_CRON_HOOK, SUMAI_ROTATE_TOKEN_HOOK, SUMAI_PRUNE_LOGS_HOOK] as $hook_name) { if (isset($hooks[$hook_name])) { $has_sumai_jobs = true; $event_key = key($hooks[$hook_name]); $schedule_details = $hooks[$hook_name][$event_key]; $schedule_name = $schedule_details['schedule'] ?? '(One-off?)'; $interval = isset($schedule_details['interval']) ? ($schedule_details['interval'] . 's') : 'N/A'; $debug_info['cron_jobs'][$hook_name] = [ 'next_run_gmt' => gmdate('Y-m-d H:i:s', $time), 'next_run_site' => wp_date('Y-m-d H:i:s T', $time), 'schedule_name' => $schedule_name, 'interval' => $interval ]; } } } if (!$has_sumai_jobs) $debug_info['cron_jobs'] = 'No Sumai tasks scheduled.';
+    $log_file = sumai_ensure_log_dir(); 
+    $debug_info['log_file_path'] = $log_file ?: 'ERROR: Could not determine log path.'; // Changed error message
+    $debug_info['log_readable'] = false;
+    $debug_info['log_writable'] = false;
+    $debug_info['log_size_kb'] = 'N/A';
+    $debug_info['recent_logs'] = ['Log status unknown.']; // Default message
+
+    if ($log_file) {
+        // Check readability/writability using WP Filesystem for potentially better compatibility
+        global $wp_filesystem;
+        if (empty($wp_filesystem)) {
+            require_once ABSPATH . 'wp-admin/includes/file.php';
+            WP_Filesystem();
+        }
+        
+        // Use WP_Filesystem methods if available
+        if ($wp_filesystem) {
+             $debug_info['log_readable'] = $wp_filesystem->is_readable($log_file);
+             $debug_info['log_writable'] = $wp_filesystem->is_writable($log_file);
+             if ($debug_info['log_readable'] && $wp_filesystem->exists($log_file)) {
+                $debug_info['log_size_kb'] = round($wp_filesystem->size($log_file) / 1024, 2);
+             } else {
+                 $debug_info['log_size_kb'] = 'N/A';
+             }
+        } else {
+            // Fallback to basic PHP checks if WP_Filesystem fails to initialize
+            $debug_info['log_readable'] = is_readable($log_file);
+            $debug_info['log_writable'] = is_writable($log_file);
+            if ($debug_info['log_readable'] && file_exists($log_file)) {
+                $debug_info['log_size_kb'] = round(filesize($log_file) / 1024, 2);
+            } else {
+                 $debug_info['log_size_kb'] = 'N/A';
+            }
+            $debug_info['recent_logs'][] = 'Note: WP_Filesystem init failed, using basic file checks.';
+        }
+
+        // Attempt to read logs only if readable
+        if ($debug_info['log_readable']) {
+            if ($debug_info['log_size_kb'] === 'N/A' || $debug_info['log_size_kb'] == 0) {
+                 $debug_info['recent_logs'] = ['Log file is empty or size unknown.'];
+            } else {
+                // Use the robust tail function
+                $debug_info['recent_logs'] = sumai_read_log_tail($log_file, 50);
+            }
+        } else {
+            $debug_info['recent_logs'] = ['Log file is not readable. Check permissions.'];
+        }
+    } else {
+         $debug_info['recent_logs'] = ['Could not determine log file path.'];
+    }
+
+    // --- Remove the old log reading logic --- 
+    // if ($debug_info['log_readable']) {
+    //    $log_content = ($debug_info['log_size_kb'] > 0) ? @file_get_contents($log_file, false, null, -10240) : '';
+    //    $debug_info['recent_logs'] = ($log_content!==false)?array_slice(explode("\n", trim($log_content)), -50):['Error reading log.'];
+    // } else {
+    //    $debug_info['recent_logs'] = ['Log not readable.'];
+    // }
+    
     $processed_guids = get_option(SUMAI_PROCESSED_GUIDS_OPTION, []); $debug_info['guids_count'] = count($processed_guids); $debug_info['guids_newest'] = empty($processed_guids)?'N/A':wp_date('Y-m-d H:i:s T', max($processed_guids)); $debug_info['guids_oldest'] = empty($processed_guids)?'N/A':wp_date('Y-m-d H:i:s T', min($processed_guids));
     global $wp_version; $wp_cron_disabled = defined('DISABLE_WP_CRON')&&DISABLE_WP_CRON; $debug_info['system'] = ['plugin_v' => get_file_data(__FILE__, ['Version'=>'Version'])['Version'], 'php_v' => phpversion(), 'wp_v' => $wp_version, 'wp_tz' => wp_timezone_string(), 'wp_debug' => (defined('WP_DEBUG')&&WP_DEBUG?'Yes':'No'), 'wp_mem' => WP_MEMORY_LIMIT, 'wp_cron' => $wp_cron_disabled?'Disabled':'Enabled', 'server_time' => wp_date('Y-m-d H:i:s T'), 'openssl' => extension_loaded('openssl')?'Yes':'No', 'auth_key' => (defined('AUTH_KEY')&&AUTH_KEY?'Yes':'No'), 'curl' => extension_loaded('curl')?'Yes':'No', 'mbstring' => extension_loaded('mbstring')?'Yes':'No'];
     return $debug_info;
 }
+
 function sumai_render_debug_info() { $d = sumai_get_debug_info(); echo '<div><style>td{vertical-align:top;}pre{white-space:pre-wrap;word-break:break-all;background:#f6f7f7;padding:5px;border:1px solid #ccc;margin:0;font-size:12px;max-height:200px;overflow-y:auto;}</style><h3>Settings</h3><table class="wp-list-table fixed striped"><tbody>'; foreach($d['settings'] as $k=>$v) echo '<tr><td width="30%">'.esc_html(ucwords(str_replace('_',' ',$k))).'</td><td><pre>'.esc_html(is_array($v)?print_r($v,true):$v).'</pre></td></tr>'; echo '</tbody></table><h3>Processed Items</h3><table class="wp-list-table fixed striped"><tbody><tr><td width="30%">Count</td><td>'.esc_html($d['guids_count']).'</td></tr><tr><td>Newest</td><td>'.esc_html($d['guids_newest']).'</td></tr><tr><td>Oldest</td><td>'.esc_html($d['guids_oldest']).' (TTL: '.esc_html(SUMAI_PROCESSED_GUID_TTL/DAY_IN_SECONDS).'d)</td></tr></tbody></table><h3>Scheduled Tasks</h3>'; if(is_array($d['cron_jobs'])&&!empty($d['cron_jobs'])){echo '<table class="wp-list-table fixed striped"><thead><tr><th>Hook</th><th>Next Run (Site)</th><th>Schedule</th></tr></thead><tbody>'; foreach($d['cron_jobs'] as $h=>$det) echo '<tr><td><code>'.esc_html($h).'</code></td><td>'.esc_html($det['next_run_site']).'</td><td>'.esc_html($det['schedule_name']).'</td></tr>'; echo '</tbody></table>';} else echo '<p>'.esc_html($d['cron_jobs']).'</p>'; echo '<h3>System Info</h3><table class="wp-list-table fixed striped"><tbody>'; foreach($d['system'] as $k=>$v):?><tr><td width="30%"><strong><?=esc_html(ucwords(str_replace('_',' ',$k)))?></strong></td><td><?=wp_kses_post($v)?></td></tr><?php endforeach; echo '</tbody></table><h3>Logging</h3><table class="wp-list-table fixed striped"><tbody><tr><td width="30%">Path</td><td><code>'.esc_html($d['log_file_path']).'</code></td></tr><tr><td>Status</td><td>'.($d['log_readable']?'Readable':'Not Readable').', '.($d['log_writable']?'Writable':'Not Writable').' (Size: '.esc_html($d['log_size_kb']).' KB)</td></tr></tbody></table><h4>Recent Logs (tail ~50)</h4><div style="max-height:400px;overflow-y:auto;background:#1e1e1e;color:#d4d4d4;border:1px solid #3c3c3c;padding:10px;font-family:monospace;white-space:pre-wrap;word-break:break-word;">'.esc_html(implode("\n",$d['recent_logs'])).'</div></div>'; }
 
-?>
+function sumai_ensure_log_dir(): ?string { static $p=null,$c=false; if($c)return $p; $c=true; $u=wp_upload_dir(); if(!empty($u['error']))return null; $d=trailingslashit($u['basedir']).SUMAI_LOG_DIR_NAME; $f=trailingslashit($d).SUMAI_LOG_FILE_NAME; if(!is_dir($d)){if(!wp_mkdir_p($d))return null; @file_put_contents($d.'/.htaccess',"Options -Indexes\nDeny from all"); @file_put_contents($d.'/index.php','<?php // Silence');} if(!is_writable($d))return null; if(!file_exists($f)){if(false===@file_put_contents($f,''))return null; @chmod($f,0644);} if(!is_writable($f))return null; return $p=$f; }
+
+function sumai_log_event(string $msg, bool $is_error=false) { $file=sumai_ensure_log_dir(); if(!$file){error_log("Sumai ".($is_error?'[ERR]':'[INFO]')."(Log N/A): ".$msg); return;} $ts=wp_date('Y-m-d H:i:s T'); $lvl=$is_error?' [ERROR] ':' [INFO]  '; $line='['.$ts.']'.$lvl.trim(preg_replace('/\s+/',' ',wp_strip_all_tags($msg))).PHP_EOL; @file_put_contents($file,$line,FILE_APPEND|LOCK_EX); }
+
+function sumai_prune_logs() { $file=sumai_ensure_log_dir(); if(!$file||!is_readable($file)||!is_writable($file)) return; $lines=@file($file,4|2); if(empty($lines))return; $cutoff=time()-SUMAI_LOG_TTL; $keep=[]; $pruned=0; foreach($lines as $line){$ts=false; if(preg_match('/^\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} [A-Z\/+-\w\:]+)\]/',$line,$m)){try{$dt=new DateTime($m[1]);$ts=$dt->getTimestamp();}catch(Exception $e){$ts=strtotime($m[1]);}} if($ts!==false&&$ts>=$cutoff)$keep[]=$line; else $pruned++;} if($pruned>0){$new_content=empty($keep)?'':implode(PHP_EOL,$keep).PHP_EOL; @file_put_contents($file,$new_content,LOCK_EX); } }
