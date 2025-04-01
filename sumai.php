@@ -221,9 +221,9 @@ function sumai_generate_daily_summary( bool $force_fetch = false ) {
  * This function is called by the Action Scheduler.
  *
  * @param array $args Arguments for content processing.
- * @return bool|int False on failure, post ID on success.
+ * @return mixed False on failure, post ID on success.
  */
-function sumai_process_content_action(array $args): bool|int {
+function sumai_process_content_action(array $args) {
     sumai_log_event('Starting background content processing.');
     return sumai_process_content(
         $args['content'],
@@ -246,9 +246,9 @@ function sumai_process_content_action(array $args): bool|int {
  * @param int $draft_mode Whether to create a draft post.
  * @param string $post_signature Signature to append to the post.
  * @param array $guids_to_add GUIDs to mark as processed.
- * @return bool|int False on failure, post ID on success.
+ * @return mixed False on failure, post ID on success.
  */
-function sumai_process_content(string $content, string $context_prompt, string $title_prompt, string $api_key, int $draft_mode, string $post_signature, array $guids_to_add): bool|int {
+function sumai_process_content(string $content, string $context_prompt, string $title_prompt, string $api_key, int $draft_mode, string $post_signature, array $guids_to_add) {
     try {
         $summary_result = sumai_summarize_text($content, $context_prompt, $title_prompt, $api_key);
         unset($content); // Free up memory
