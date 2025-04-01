@@ -30,6 +30,8 @@ define( 'SUMAI_MAX_INPUT_CHARS', 25000 );
 define( 'SUMAI_PROCESSED_GUID_TTL', 30 * DAY_IN_SECONDS );
 define( 'SUMAI_LOG_TTL', 30 * DAY_IN_SECONDS );
 define( 'SUMAI_PROCESS_CONTENT_ACTION', 'sumai_process_content_action' );
+define( 'SUMAI_STATUS_OPTION', 'sumai_generation_status' );
+define( 'SUMAI_STATUS_TRANSIENT', 'sumai_status_' );
 
 /* -------------------------------------------------------------------------
  * 1. ACTIVATION & DEACTIVATION HOOKS
@@ -126,16 +128,85 @@ function sumai_rotate_cron_token() {
 }
 
 add_action('update_option_'.SUMAI_SETTINGS_OPTION, 'sumai_schedule_daily_event', 10, 0);
-add_action(SUMAI_CRON_HOOK, 'sumai_generate_daily_summary'); // Direct call
+add_action(SUMAI_CRON_HOOK, 'sumai_generate_daily_summary_event'); // Direct call
 add_action(SUMAI_ROTATE_TOKEN_HOOK, 'sumai_rotate_cron_token');
 add_action(SUMAI_PRUNE_LOGS_HOOK, 'sumai_prune_logs');
 
 /* -------------------------------------------------------------------------
- * 3. EXTERNAL CRON TRIGGER
+ * 3. ADMIN HOOKS & AJAX
  * ------------------------------------------------------------------------- */
 
-add_action('init', 'sumai_check_external_trigger', 5);
+add_action( 'admin_menu', 'sumai_add_admin_menu' );
+add_action( 'admin_enqueue_scripts', 'sumai_admin_enqueue_scripts' );
+add_action( 'wp_ajax_sumai_manual_generate', 'sumai_ajax_manual_generate' );
+add_action( 'wp_ajax_sumai_test_feed', 'sumai_ajax_test_feed' );
+add_action( 'wp_ajax_sumai_get_generation_status', 'sumai_ajax_get_generation_status' );
 
+function sumai_admin_enqueue_scripts( $hook ) {
+    if ( 'settings_page_sumai-settings' !== $hook ) return;
+    wp_enqueue_script( 'sumai-admin-js', plugins_url( 'admin.js', __FILE__ ), array( 'jquery' ), SUMAI_VERSION, true );
+    wp_localize_script( 'sumai-admin-js', 'sumaiAdmin', array(
+        'ajaxurl' => admin_url( 'admin-ajax.php' ),
+        'nonce' => wp_create_nonce( 'sumai-admin-nonce' ),
+        'settingsOption' => SUMAI_SETTINGS_OPTION
+    ));
+}
+
+function sumai_ajax_manual_generate() {
+    check_ajax_referer( 'sumai-admin-nonce', 'nonce' );
+    if ( ! current_user_can( 'manage_options' ) ) {
+        wp_send_json_error( 'Unauthorized' );
+    }
+
+    $draft_mode = isset( $_POST['draft_mode'] ) && $_POST['draft_mode'] === 'true';
+    
+    // Generate a unique status ID for this process
+    $status_id = sumai_generate_status_id();
+    
+    // Initialize status
+    sumai_update_status($status_id, 'Starting manual generation process...', 'pending');
+    
+    // Schedule the generation process
+    wp_schedule_single_event( time(), 'sumai_generate_daily_summary_event', array( true, $draft_mode, $status_id ) );
+    
+    // Return the status ID to the client
+    wp_send_json_success( array(
+        'status_id' => $status_id,
+        'message' => 'Generation process started. Please wait...'
+    ));
+}
+
+function sumai_ajax_get_generation_status() {
+    check_ajax_referer( 'sumai-admin-nonce', 'nonce' );
+    if ( ! current_user_can( 'manage_options' ) ) {
+        wp_send_json_error( 'Unauthorized' );
+    }
+    
+    $status_id = isset( $_POST['status_id'] ) ? sanitize_text_field( $_POST['status_id'] ) : '';
+    if (empty($status_id)) {
+        wp_send_json_error('Invalid status ID');
+    }
+    
+    $status = sumai_get_status($status_id);
+    if ($status === false) {
+        wp_send_json_error('Status not found or expired');
+    }
+    
+    wp_send_json_success($status);
+}
+
+function sumai_ajax_test_feed() {
+    // Existing code...
+}
+
+/* -------------------------------------------------------------------------
+ * 4. CRON & MAIN FUNCTIONALITY
+ * ------------------------------------------------------------------------- */
+
+add_action( SUMAI_CRON_HOOK, 'sumai_generate_daily_summary_event' );
+add_action( SUMAI_PROCESS_CONTENT_ACTION, 'sumai_process_content_action' );
+
+// External trigger function
 function sumai_check_external_trigger() {
     if (!isset($_GET['sumai_trigger'], $_GET['token']) || $_GET['sumai_trigger'] !== '1') return;
     $provided = sanitize_text_field($_GET['token']);
@@ -149,82 +220,133 @@ function sumai_check_external_trigger() {
         } else { sumai_log_event('External trigger skipped, lock active.', true); }
     } else { sumai_log_event('Invalid external trigger token.', true); }
 }
+add_action('init', 'sumai_check_external_trigger', 5);
 
-/* -------------------------------------------------------------------------
- * 4. MAIN SUMMARY GENERATION
- * ------------------------------------------------------------------------- */
-
-function sumai_generate_daily_summary( bool $force_fetch = false ) {
-
-    // No initial includes here. We load JIT before wp_insert_post.
-
-    sumai_log_event('Starting summary generation job.'.($force_fetch ? ' (Forced)' : ''));
-    $options = get_option(SUMAI_SETTINGS_OPTION, []);
-    $api_key = sumai_get_api_key();
-
-    if (empty($api_key)) { sumai_log_event('Error: API key missing.', true); return false; }
-    if (empty($options['feed_urls'])) { sumai_log_event('Error: No feed URLs.', true); return false; }
-    $feed_urls = array_slice(array_filter(array_map('trim', preg_split('/\r\n|\r|\n/', $options['feed_urls']))), 0, SUMAI_MAX_FEED_URLS);
-    if (empty($feed_urls)) { sumai_log_event('Error: No valid feed URLs.', true); return false; }
-
-    try {
-        list($new_content, $guids_to_add) = sumai_fetch_new_articles_content($feed_urls, $force_fetch);
-        if (empty($new_content)) { sumai_log_event('No new content found. Skipping summary.'); return false; }
-        sumai_log_event('Fetched '.mb_strlen($new_content).' chars new content.');
-
-        // Check if Action Scheduler is available and properly loaded
-        $has_action_scheduler = sumai_check_action_scheduler();
-        
-        // Schedule the background processing if Action Scheduler is available
-        if ($has_action_scheduler && function_exists('as_schedule_single_action')) {
-            // Prepare arguments for the background action
-            $action_args = [
-                'content' => $new_content,
-                'context_prompt' => $options['context_prompt'] ?? '',
-                'title_prompt' => $options['title_prompt'] ?? '',
-                'api_key' => $api_key,
-                'draft_mode' => $options['draft_mode'] ?? 0,
-                'post_signature' => $options['post_signature'] ?? '',
-                'guids_to_add' => $guids_to_add
-            ];
-            
-            // Register the action handler if not already registered
-            if (!has_action(SUMAI_PROCESS_CONTENT_ACTION)) {
-                add_action(SUMAI_PROCESS_CONTENT_ACTION, 'sumai_process_content_action');
-            }
-            
-            // Schedule the background action
-            as_schedule_single_action(time(), SUMAI_PROCESS_CONTENT_ACTION, [$action_args]);
-            sumai_log_event('Content fetched, background processing scheduled.');
-            return true;
-        } else {
-            // Fallback to synchronous processing if Action Scheduler isn't available
-            sumai_log_event('Action Scheduler not available, processing synchronously.');
-            return sumai_process_content(
-                $new_content,
-                $options['context_prompt'] ?? '',
-                $options['title_prompt'] ?? '',
-                $api_key,
-                $options['draft_mode'] ?? 0,
-                $options['post_signature'] ?? '',
-                $guids_to_add
-            );
-        }
-    } catch (\Throwable $e) {
-        sumai_log_event("FATAL during generation: ".$e->getMessage()." L".$e->getLine()." F".basename($e->getFile()), true);
-        return false;
+/**
+ * Event handler for the daily summary generation cron job.
+ * 
+ * @param bool $force_fetch Whether to force fetching articles even if they've been processed before
+ * @param bool $draft_mode Whether to save the post as a draft
+ * @param string $status_id Optional status ID for tracking progress
+ */
+function sumai_generate_daily_summary_event( bool $force_fetch = false, bool $draft_mode = false, string $status_id = '' ) {
+    // Check if we're in manual mode (admin triggered)
+    $is_manual = !empty($status_id);
+    
+    // Use the provided status ID or generate a new one
+    if (empty($status_id)) {
+        $status_id = sumai_generate_status_id();
     }
+    
+    // Update status
+    sumai_update_status($status_id, 'Starting summary generation...', 'processing');
+    
+    // Call the main function with the status ID
+    sumai_generate_daily_summary($force_fetch, $draft_mode, $status_id);
 }
 
 /**
- * Processes the fetched content in the background.
- * This function is called by the Action Scheduler.
- *
- * @param array $args Arguments for content processing.
- * @return mixed False on failure, post ID on success.
+ * Main function to generate the daily summary.
+ * 
+ * @param bool $force_fetch Whether to force fetching articles even if they've been processed before
+ * @param bool $draft_mode Whether to save the post as a draft
+ * @param string $status_id Status ID for tracking progress
+ * @return bool Success or failure
+ */
+function sumai_generate_daily_summary( bool $force_fetch = false, bool $draft_mode = false, string $status_id = '' ) {
+    sumai_log_event('Starting daily summary generation. Force: '.($force_fetch?'Y':'N').', Draft: '.($draft_mode?'Y':'N'));
+    
+    if (empty($status_id)) {
+        $status_id = sumai_generate_status_id();
+    }
+    
+    // Update status
+    sumai_update_status($status_id, 'Checking dependencies and settings...', 'processing');
+    
+    // Check for Action Scheduler
+    if (!sumai_check_action_scheduler()) {
+        sumai_update_status($status_id, 'Action Scheduler not available. Cannot proceed.', 'error');
+        sumai_log_event('Action Scheduler not available. Cannot proceed.', true);
+        return false;
+    }
+    
+    // Get settings
+    $settings = get_option(SUMAI_SETTINGS_OPTION, []);
+    $api_key = sumai_get_api_key();
+    if (empty($api_key)) {
+        sumai_update_status($status_id, 'API key not configured. Cannot proceed.', 'error');
+        sumai_log_event('API key not configured. Cannot proceed.', true);
+        return false;
+    }
+    
+    // Get feed URLs
+    $feed_urls = array_filter(explode("\n", $settings['feed_urls'] ?? ''));
+    if (empty($feed_urls)) {
+        sumai_update_status($status_id, 'No feed URLs configured. Cannot proceed.', 'error');
+        sumai_log_event('No feed URLs configured. Cannot proceed.', true);
+        return false;
+    }
+    
+    // Update status
+    sumai_update_status($status_id, 'Fetching articles from ' . count($feed_urls) . ' feeds...', 'processing');
+    
+    // Fetch content
+    list($content, $guids_to_add) = sumai_fetch_new_articles_content($feed_urls, $force_fetch);
+    
+    if (empty($content)) {
+        sumai_update_status($status_id, 'No new content found to summarize.', 'complete');
+        sumai_log_event('No new content found to summarize.');
+        return false;
+    }
+    
+    // Update status
+    sumai_update_status($status_id, 'Found ' . count($guids_to_add) . ' new articles. Scheduling processing...', 'processing');
+    
+    // Schedule the background processing
+    $context_prompt = $settings['context_prompt'] ?? '';
+    $title_prompt = $settings['title_prompt'] ?? '';
+    $post_signature = $settings['post_signature'] ?? '';
+    
+    // Use draft mode from settings if not explicitly set
+    if ($draft_mode === false && isset($settings['draft_mode'])) {
+        $draft_mode = (bool)$settings['draft_mode'];
+    }
+    
+    // Schedule the background processing with the status ID
+    as_schedule_single_action(
+        time(),
+        SUMAI_PROCESS_CONTENT_ACTION,
+        [
+            'content' => $content,
+            'context_prompt' => $context_prompt,
+            'title_prompt' => $title_prompt,
+            'api_key' => $api_key,
+            'draft_mode' => $draft_mode,
+            'post_signature' => $post_signature,
+            'guids_to_add' => $guids_to_add,
+            'status_id' => $status_id
+        ]
+    );
+    
+    sumai_update_status($status_id, 'Content fetched and processing scheduled in background.', 'processing');
+    sumai_log_event('Content fetched and processing scheduled in background.');
+    return true;
+}
+
+/**
+ * Background action to process content and create a post.
+ * 
+ * @param array $args Arguments for processing
+ * @return bool Success or failure
  */
 function sumai_process_content_action(array $args) {
     sumai_log_event('Starting background content processing.');
+    
+    $status_id = $args['status_id'] ?? '';
+    if (!empty($status_id)) {
+        sumai_update_status($status_id, 'Starting OpenAI API processing...', 'processing');
+    }
+    
     return sumai_process_content(
         $args['content'],
         $args['context_prompt'],
@@ -232,123 +354,118 @@ function sumai_process_content_action(array $args) {
         $args['api_key'],
         $args['draft_mode'],
         $args['post_signature'],
-        $args['guids_to_add']
+        $args['guids_to_add'],
+        $status_id
     );
 }
 
 /**
- * Processes the fetched content by calling the OpenAI API and creating a post.
- *
- * @param string $content The content to summarize.
- * @param string $context_prompt The context prompt for summarization.
- * @param string $title_prompt The title prompt for summarization.
- * @param string $api_key The OpenAI API key.
- * @param int $draft_mode Whether to create a draft post.
- * @param string $post_signature Signature to append to the post.
- * @param array $guids_to_add GUIDs to mark as processed.
- * @return mixed False on failure, post ID on success.
+ * Process content, make OpenAI API call, and create a post.
+ * 
+ * @param string $content Content to summarize
+ * @param string $context_prompt Context prompt for OpenAI
+ * @param string $title_prompt Title prompt for OpenAI
+ * @param string $api_key OpenAI API key
+ * @param bool $draft_mode Whether to save as draft
+ * @param string $post_signature Signature to append to post
+ * @param array $guids_to_add GUIDs to mark as processed
+ * @param string $status_id Status ID for tracking progress
+ * @return bool Success or failure
  */
-function sumai_process_content(string $content, string $context_prompt, string $title_prompt, string $api_key, int $draft_mode, string $post_signature, array $guids_to_add) {
-    try {
-        $summary_result = sumai_summarize_text($content, $context_prompt, $title_prompt, $api_key);
-        unset($content); // Free up memory
-        
-        if (!$summary_result || empty($summary_result['title'])) { 
-            sumai_log_event('Error: Failed to get summary/title from API.', true); 
-            return false; 
+function sumai_process_content(
+    string $content,
+    string $context_prompt,
+    string $title_prompt,
+    string $api_key,
+    bool $draft_mode,
+    string $post_signature,
+    array $guids_to_add,
+    string $status_id = ''
+) {
+    if (empty($content)) {
+        if (!empty($status_id)) {
+            sumai_update_status($status_id, 'No content to process.', 'error');
         }
-        
-        sumai_log_event('Summary & title generated.');
-        sumai_log_event('Preparing to create post...');
-
-        // Use the raw title directly
-        $clean_title = trim($summary_result['title'], '"\' ');
-        $post_title_to_use = $clean_title;
-
-        // Ensure get_userdata is available (needed for author check)
-        if (!function_exists('get_userdata')) {
-             sumai_log_event('get_userdata() missing. Loading user.php...');
-             require_once ABSPATH . WPINC . '/user.php';
-             if (!function_exists('get_userdata')) { 
-                 sumai_log_event('FATAL: Failed loading user.php!', true); 
-                 return false; 
-             }
-        }
-
-        $author_id = (is_user_logged_in() && function_exists('get_current_user_id') && ($uid = get_current_user_id()) > 0) ? $uid : 1;
-        $author = get_userdata($author_id);
-        if (!$author || !$author->has_cap('publish_posts')) {
-            $author_id = 1; 
-            $author = get_userdata($author_id);
-            if (!$author || !$author->has_cap('publish_posts')) { 
-                sumai_log_event("Error: Author ID {$author_id} invalid/cannot publish.", true); 
-                return false; 
-            }
-        }
-
-        // Apply post signature if available
-        $post_content = $summary_result['content'];
-        if (!empty($post_signature)) {
-            $post_content = sumai_append_signature_to_content($post_content);
-        }
-
-        $post_data = [
-            'post_title' => $post_title_to_use, 
-            'post_content' => $post_content, 
-            'post_status' => $draft_mode ? 'draft' : 'publish', 
-            'post_type' => 'post', 
-            'post_author' => $author_id, 
-            'meta_input' => ['_sumai_generated' => true]
-        ];
-
-        // --- Load post.php JUST BEFORE wp_insert_post ---
-        if (!function_exists('wp_insert_post')) {
-             $post_file = ABSPATH . 'wp-admin/includes/post.php';
-             sumai_log_event('Loading post.php JIT before insert from: ' . $post_file);
-             if (file_exists($post_file)) {
-                 require_once $post_file;
-                 if (!function_exists('wp_insert_post')) { 
-                     sumai_log_event('FATAL: Failed loading wp_insert_post after require!', true); 
-                     return false; 
-                 }
-             } else { 
-                 sumai_log_event('FATAL: post.php not found!', true); 
-                 return false; 
-             }
-        }
-        // --- End Load ---
-
-        $post_id = wp_insert_post($post_data, true);
-
-        if (is_wp_error($post_id)) { 
-            sumai_log_event("Error creating post: ".$post_id->get_error_message(), true); 
-            return false; 
-        }
-        
-        sumai_log_event("Post created ID: {$post_id}, Status: {$post_data['post_status']}.");
-
-        if (!empty($guids_to_add)) {
-            $guids = get_option(SUMAI_PROCESSED_GUIDS_OPTION, []); 
-            $guids = array_merge($guids, $guids_to_add);
-            $now = time(); 
-            $pruned = 0; 
-            
-            foreach ($guids as $guid => $ts) { 
-                if ($ts < ($now - SUMAI_PROCESSED_GUID_TTL)) { 
-                    unset($guids[$guid]); 
-                    $pruned++; 
-                } 
-            }
-            
-            update_option(SUMAI_PROCESSED_GUIDS_OPTION, $guids);
-            sumai_log_event("Processed GUIDs: Added ".count($guids_to_add).", Pruned {$pruned}. Total ".count($guids));
-        }
-        
-        return $post_id;
-    } catch (\Throwable $e) {
-        sumai_log_event("FATAL during content processing: ".$e->getMessage()." L".$e->getLine()." F".basename($e->getFile()), true);
+        sumai_log_event('No content to process in sumai_process_content.', true);
         return false;
     }
+    
+    if (!empty($status_id)) {
+        sumai_update_status($status_id, 'Calling OpenAI API to generate summary...', 'processing');
+    }
+    
+    // Call OpenAI API
+    $summary_data = sumai_summarize_text($content, $context_prompt, $title_prompt, $api_key);
+    
+    if (!$summary_data) {
+        if (!empty($status_id)) {
+            sumai_update_status($status_id, 'Failed to generate summary from OpenAI.', 'error');
+        }
+        sumai_log_event('Failed to generate summary from OpenAI.', true);
+        return false;
+    }
+    
+    if (!empty($status_id)) {
+        sumai_update_status($status_id, 'Summary generated. Creating post...', 'processing');
+    }
+    
+    // Create post
+    $post_content = $summary_data['content'];
+    
+    // Add signature if provided
+    if (!empty($post_signature)) {
+        $post_content .= "\n\n<hr class=\"sumai-signature-divider\" />\n" . wp_kses_post($post_signature);
+    }
+    
+    $post_data = array(
+        'post_title'    => $summary_data['title'],
+        'post_content'  => $post_content,
+        'post_status'   => $draft_mode ? 'draft' : 'publish',
+        'post_author'   => 1,
+        'post_type'     => 'post',
+    );
+    
+    $post_id = wp_insert_post($post_data);
+    
+    if (is_wp_error($post_id)) {
+        if (!empty($status_id)) {
+            sumai_update_status($status_id, 'Failed to create post: ' . $post_id->get_error_message(), 'error');
+        }
+        sumai_log_event('Failed to create post: ' . $post_id->get_error_message(), true);
+        return false;
+    }
+    
+    // Update processed GUIDs
+    if (!empty($guids_to_add)) {
+        $processed = get_option(SUMAI_PROCESSED_GUIDS_OPTION, []);
+        $processed = array_merge($processed, $guids_to_add);
+        
+        // Prune old GUIDs to prevent the option from growing too large
+        $cutoff = time() - SUMAI_PROCESSED_GUID_TTL;
+        foreach ($processed as $guid => $timestamp) {
+            if ($timestamp < $cutoff) {
+                unset($processed[$guid]);
+            }
+        }
+        
+        update_option(SUMAI_PROCESSED_GUIDS_OPTION, $processed);
+    }
+    
+    if (!empty($status_id)) {
+        $post_url = get_permalink($post_id);
+        $status_message = $draft_mode 
+            ? 'Draft created successfully. <a href="' . esc_url(get_edit_post_link($post_id)) . '" target="_blank">Edit draft</a>'
+            : 'Post published successfully. <a href="' . esc_url($post_url) . '" target="_blank">View post</a>';
+        
+        sumai_update_status($status_id, $status_message, 'complete', [
+            'post_id' => $post_id,
+            'post_url' => $post_url,
+            'is_draft' => $draft_mode
+        ]);
+    }
+    
+    sumai_log_event('Post ' . ($draft_mode ? 'draft' : 'published') . ' successfully. ID: ' . $post_id);
+    return true;
 }
 
 /* -------------------------------------------------------------------------
@@ -416,7 +533,7 @@ function sumai_fetch_new_articles_content( array $feed_urls, bool $force_fetch =
             $text = trim(preg_replace('/\s+/s', ' ', wp_strip_all_tags($text_content))); // Added /s modifier for newline handling
             if (empty($text)) continue; // Skip if content becomes empty after stripping tags
             
-            $item_title = strip_tags($item->get_title() ?: 'Untitled'); 
+            $item_title = strip_tags($item->get_title()?:'Untitled'); 
             $item_source_info = "Source: ".esc_html($feed_title)."\nTitle: ".esc_html($item_title)."\nContent:\n";
             $formatted_content = $item_source_info . $text . "\n\n---\n\n";
             
@@ -481,29 +598,104 @@ add_action('admin_menu', 'sumai_add_admin_menu'); add_action('admin_init', 'suma
 function sumai_add_admin_menu() { add_options_page('Sumai Settings', 'Sumai', 'manage_options', 'sumai-settings', 'sumai_render_settings_page'); }
 function sumai_register_settings() { register_setting('sumai_options_group', SUMAI_SETTINGS_OPTION, 'sumai_sanitize_settings'); }
 
-function sumai_sanitize_settings($input): array { $s=[];$c=get_option(SUMAI_SETTINGS_OPTION,[]);$ce=$c['api_key']??'';$vu=[];if(isset($input['feed_urls'])){$us=array_map('trim',preg_split('/\r\n|\r|\n/',sanitize_textarea_field($input['feed_urls'])));foreach($us as $u){if(!empty($u)&&filter_var($u,FILTER_VALIDATE_URL)&&preg_match('/^https?:\/\//',$u))$vu[]=$u;}$vu=array_slice($vu,0,SUMAI_MAX_FEED_URLS);}$s['feed_urls']=implode("\n",$vu);$s['context_prompt']=isset($input['context_prompt'])?sanitize_textarea_field($input['context_prompt']):'';$s['title_prompt']=isset($input['title_prompt'])?sanitize_textarea_field($input['title_prompt']):'';$s['draft_mode']=(isset($input['draft_mode'])&&$input['draft_mode']=='1')?1:0;$s['post_signature']=isset($input['post_signature'])?wp_kses_post($input['post_signature']):'';$t=isset($input['schedule_time'])?sanitize_text_field($input['schedule_time']):'03:00';$s['schedule_time']=preg_match('/^([01]?\d|2[0-3]):([0-5]\d)$/',$t)?$t:($c['schedule_time']??'03:00'); if(defined('SUMAI_OPENAI_API_KEY')&&!empty(SUMAI_OPENAI_API_KEY)){$s['api_key']=$ce;}elseif(isset($input['api_key'])){$ni=sanitize_text_field(trim($input['api_key']));if($ni==='********************')$s['api_key']=$ce;elseif(empty($ni)){$s['api_key']='';if(!empty($ce))sumai_log_event('API key cleared.');}else{if(function_exists('openssl_encrypt')&&defined('AUTH_KEY')&&AUTH_KEY){$cp='aes-256-cbc';$il=openssl_cipher_iv_length($cp);if($il!==false){$iv=openssl_random_pseudo_bytes($il);$en=openssl_encrypt($ni,$cp,AUTH_KEY,OPENSSL_RAW_DATA,$iv);if($en!==false&&$iv!==false){$ne=base64_encode($iv.$en);if($ne!==$ce)sumai_log_event('API key saved.');$s['api_key']=$ne;}else{$s['api_key']=$ce;}}} else $s['api_key']=$ce;}}else $s['api_key']=$ce; return $s;}
+function sumai_sanitize_settings($input): array { $s=[];$c=get_option(SUMAI_SETTINGS_OPTION,[]);$ce=$c['api_key']??'';$vu=[];if(isset($input['feed_urls'])){$us=array_map('trim',preg_split('/\r\n|\r|\n/',sanitize_textarea_field($input['feed_urls'])));foreach($us as $u){if(!empty($u)&&filter_var($u,FILTER_VALIDATE_URL)&&preg_match('/^https?:\/\//',$u))$vu[]=$u;}$vu=array_slice($vu,0,SUMAI_MAX_FEED_URLS);}$s['feed_urls']=implode("\n",$vu);$s['context_prompt']=isset($input['context_prompt'])?sanitize_textarea_field($input['context_prompt']):'';$s['title_prompt']=isset($input['title_prompt'])?sanitize_textarea_field($input['title_prompt']):'';$s['draft_mode']=(isset($input['draft_mode'])&&$input['draft_mode']=='1')?1:0;$s['post_signature']=isset($input['post_signature'])?wp_kses_post($input['post_signature']):'';$t=isset($input['schedule_time'])?sanitize_text_field($input['schedule_time']):'03:00';$s['schedule_time']=preg_match('/^([01]?\d|2[0-3]):([0-5]\d)$/',$t)?$t:($c['schedule_time']??'03:00'); if(defined('SUMAI_OPENAI_API_KEY')&&!empty(SUMAI_OPENAI_API_KEY)){$s['api_key']=$ce;}elseif(isset($input['api_key'])){$ni=sanitize_text_field(trim($input['api_key']));if($ni==='********************')$s['api_key']=$ce;elseif(empty($ni)){$s['api_key']='';if(!empty($ce))sumai_log_event('API key cleared.');}else{if(function_exists('openssl_encrypt')&&defined('AUTH_KEY')&&AUTH_KEY){$cp='aes-256-cbc';$il=openssl_cipher_iv_length($cp);if($il!==false){$iv=openssl_random_pseudo_bytes($il);$en=openssl_encrypt($ni,$cp,AUTH_KEY,OPENSSL_RAW_DATA,$iv);if($en!==false&&$iv!==false){$ne=base64_encode($iv.$en);if($ne!==$ce)sumai_log_event('API key saved.');$s['api_key']=$ne;}else{$s['api_key']=$ce;}}} else $s['api_key']=$ce; return $s;}
 
 function sumai_render_settings_page() {
     if (!current_user_can('manage_options')) return;
-    if ('POST'===$_SERVER['REQUEST_METHOD'] && isset($_POST['sumai_generate_now']) && check_admin_referer('sumai_generate_now_action')) { $result = sumai_generate_daily_summary(true); $type = ($result!==false && is_int($result))?'success':'error'; $msg = ($type==='success')?sprintf('Generated Post ID: %d.',$result):'Gen failed/skipped.'; add_settings_error('sumai_settings','manual_gen',$msg,$type); set_transient('settings_errors',get_settings_errors(),30); wp_safe_redirect(admin_url('options-general.php?page=sumai-settings')); exit; }
-    $notices = get_transient('settings_errors'); if ($notices) { settings_errors('sumai_settings'); delete_transient('settings_errors'); } else { settings_errors('sumai_settings'); }
-    $opts = get_option(SUMAI_SETTINGS_OPTION, []); $opts += ['feed_urls'=>'','context_prompt'=>'','title_prompt'=>'','api_key'=>'','draft_mode'=>0,'schedule_time'=>'03:00','post_signature'=>'']; $const_key = defined('SUMAI_OPENAI_API_KEY')&&!empty(SUMAI_OPENAI_API_KEY); $db_key = !empty($opts['api_key']); $api_disp = $const_key?'*** Constant ***':($db_key?'********************':'');
+    if (isset($_POST['sumai_generate_now']) && check_admin_referer('sumai_generate_now_action')) {
+        $draft_mode = isset($_POST['draft_mode']) ? (bool)$_POST['draft_mode'] : false;
+        $status_id = sumai_generate_status_id();
+        sumai_update_status($status_id, 'Starting manual generation...', 'pending');
+        wp_schedule_single_event(time(), 'sumai_generate_daily_summary_event', array(true, $draft_mode, $status_id));
+        echo '<div class="notice notice-info"><p>Summary generation started in the background. Check the status below.</p></div>';
+        echo '<script>var sumaiStatusId = "' . esc_js($status_id) . '";</script>';
+    }
+    $opts = get_option(SUMAI_SETTINGS_OPTION, []);
+    $opts = array_merge(['feed_urls'=>'', 'context_prompt'=>'', 'title_prompt'=>'', 'draft_mode'=>0, 'schedule_time'=>'03:00', 'post_signature'=>''], $opts);
     ?>
-    <div class="wrap"><h1>Sumai Settings</h1><div id="sumai-tabs"><nav class="nav-tab-wrapper"><a href="#tab-main" class="nav-tab">Main</a><a href="#tab-advanced" class="nav-tab">Advanced</a><a href="#tab-debug" class="nav-tab">Debug</a></nav>
-    <div id="tab-main" class="tab-content"><form method="post" action="options.php"><?php settings_fields('sumai_options_group'); ?><table class="form-table">
-    <tr><th><label for="f_urls">Feed URLs</label></th><td><textarea id="f_urls" name="<?= esc_attr(SUMAI_SETTINGS_OPTION) ?>[feed_urls]" rows="3" class="large-text"><?= esc_textarea($opts['feed_urls']) ?></textarea><p>Max <?= SUMAI_MAX_FEED_URLS ?> feeds.</p></td></tr>
-    <tr><th><label for="f_key">API Key</label></th><td><?php if($const_key):?><input type="text" value="<?=esc_attr($api_disp)?>" readonly disabled/><p>Defined in wp-config.</p><?php else:?><input type="password" id="f_key" name="<?=esc_attr(SUMAI_SETTINGS_OPTION)?>[api_key]" value="<?=esc_attr($api_disp)?>" placeholder="<?= $db_key?'Update':'Enter Key' ?>"/><button type="button" id="test-api-btn" class="button">Test</button><span id="api-test-res"></span><p><?= $db_key?'Leave stars to keep.':''?></p><?php endif;?></td></tr>
+    <div class="wrap"><h1>Sumai Settings</h1>
+    <div id="sumai-tabs">
+    <h2 class="nav-tab-wrapper">
+        <a href="#tab-settings" class="nav-tab nav-tab-active">Settings</a>
+        <a href="#tab-advanced" class="nav-tab">Advanced</a>
+        <a href="#tab-debug" class="nav-tab">Debug</a>
+    </h2>
+    <div id="tab-settings" class="tab-content">
+    <form method="post" action="options.php"><?php settings_fields('sumai_options_group'); ?>
+    <h2>OpenAI API</h2>
+    <table class="form-table">
+    <tr><th><label for="f_key">API Key</label></th><td><input type="text" id="f_key" name="<?=esc_attr(SUMAI_SETTINGS_OPTION)?>[api_key]" value="<?php echo !empty($opts['api_key'])?'********************':''; ?>" class="regular-text" placeholder="sk-..." autocomplete="off" <?php echo defined('SUMAI_OPENAI_API_KEY')&&!empty(SUMAI_OPENAI_API_KEY)?'disabled':''; ?>/><?php if(defined('SUMAI_OPENAI_API_KEY')&&!empty(SUMAI_OPENAI_API_KEY)) echo '<p class="description">Using key defined in wp-config.php</p>'; ?></td></tr>
+    </table>
+    <h2>Feed Settings</h2>
+    <table class="form-table">
+    <tr><th><label for="f_urls">Feed URLs</label></th><td><textarea id="f_urls" name="<?=esc_attr(SUMAI_SETTINGS_OPTION)?>[feed_urls]" rows="5" class="large-text" placeholder="https://example.com/feed/"><?=esc_textarea($opts['feed_urls'])?></textarea><p class="description">One URL per line. Max <?=SUMAI_MAX_FEED_URLS?> feeds.</p></td></tr>
     <tr><th><label for="f_ctx">Summary Prompt</label></th><td><textarea id="f_ctx" name="<?=esc_attr(SUMAI_SETTINGS_OPTION)?>[context_prompt]" rows="3" class="large-text" placeholder="e.g., Summarize the key points of the article concisely."><?=esc_textarea($opts['context_prompt'])?></textarea><p class="description">Optional: Provide specific instructions for the AI summarization process.</p></td></tr>
     <tr><th><label for="f_ttl">Title Prompt</label></th><td><textarea id="f_ttl" name="<?=esc_attr(SUMAI_SETTINGS_OPTION)?>[title_prompt]" rows="2" class="large-text" placeholder="e.g., Generate a unique and engaging title for this summary."><?=esc_textarea($opts['title_prompt'])?></textarea><p class="description">Optional: Provide instructions for AI to generate the post title. Leave blank to use the original article title if possible.</p></td></tr> {/* UX Change */}
     <tr><th>Status</th><td><fieldset><label><input type="radio" name="<?=esc_attr(SUMAI_SETTINGS_OPTION)?>[draft_mode]" value="0" <?php checked(0,$opts['draft_mode'])?>> Publish</label> <label><input type="radio" name="<?=esc_attr(SUMAI_SETTINGS_OPTION)?>[draft_mode]" value="1" <?php checked(1,$opts['draft_mode'])?>> Draft</label></fieldset></td></tr>
-    <tr><th><label for="f_time">Schedule Time</label></th><td><input type="time" id="f_time" name="<?=esc_attr(SUMAI_SETTINGS_OPTION)?>[schedule_time]" value="<?=esc_attr($opts['schedule_time'])?>" required pattern="([01]?\d|2[0-3]):[0-5]\d"/><p>Daily (HH:MM). TZ: <strong><?=esc_html(wp_timezone_string())?></strong>.<?php $next=wp_next_scheduled(SUMAI_CRON_HOOK); echo '<br>Next: '.($next?wp_date('Y-m-d H:i',$next):'N/A');?></p></td></tr>
+    <tr><th><label for="f_time">Schedule Time</label></th><td><input type="time" id="f_time" name="<?=esc_attr(SUMAI_SETTINGS_OPTION)?>[schedule_time]" value="<?=esc_attr($opts['schedule_time'])?>" required pattern="([01]?\d|2[0-3]):([0-5]\d)"/><p>Daily (HH:MM). TZ: <strong><?=esc_html(wp_timezone_string())?></strong>.<?php $next=wp_next_scheduled(SUMAI_CRON_HOOK); echo '<br>Next: '.($next?wp_date('Y-m-d H:i',$next):'N/A');?></p></td></tr>
     <tr><th><label for="f_sig">Signature</label></th><td><textarea id="f_sig" name="<?=esc_attr(SUMAI_SETTINGS_OPTION)?>[post_signature]" rows="3" class="large-text"><?=esc_textarea($opts['post_signature'])?></textarea></td></tr>
     </table><?php submit_button('Save Settings');?></form></div>
-    <div id="tab-advanced" class="tab-content" style="display:none;"><h2>Advanced</h2><div class="card"><h3>Generate Now</h3><form method="post"><input type="submit" name="sumai_generate_now" class="button button-primary" value="Generate Now"><?php wp_nonce_field('sumai_generate_now_action');?></form></div><div class="card"><h3>Test Feeds</h3><button type="button" id="test-feed-btn" class="button">Test</button><div id="feed-test-res"></div></div><div class="card"><h3>External Cron</h3><?php $tok=get_option(SUMAI_CRON_TOKEN_OPTION); if($tok){$url=add_query_arg(['sumai_trigger'=>'1','token'=>$tok],site_url('/')); echo '<input type="text" value="'.esc_url($url).'" readonly onfocus="this.select();"><p><code>wget -qO- \''.esc_url($url).'\' > /dev/null</code></p>';} else echo '<p>Save settings.</p>';?></div></div>
-    <div id="tab-debug" class="tab-content" style="display:none;"><h2>Debug</h2><?php sumai_render_debug_info();?></div></div></div>
-    <style>.card{padding:15px;border:1px solid #ccc;background:#fff;margin:20px 0;}.nav-tab-wrapper{margin-bottom:20px;}#api-test-res,#feed-test-res{margin-left:10px;vertical-align:middle;}#feed-test-res{display:none;white-space:pre-wrap;font-family:monospace;max-height:300px;overflow-y:auto;background:#f9f9f9;padding:10px;border:1px solid #ccc;}</style>
-    {/* Restored AJAX JavaScript */}
-    <script type="text/javascript">jQuery(document).ready(function($){var $tabs=$('#sumai-tabs'),$links=$tabs.find('.nav-tab'),$content=$tabs.find('.tab-content');function showTab(h){h=h||localStorage.getItem('sumaiActiveTab')||$links.first().attr('href');$links.removeClass('nav-tab-active');$content.hide();var $link=$links.filter('[href="'+h+'"]');if(!$link.length){$link=$links.first();h=$link.attr('href');}$link.addClass('nav-tab-active');$(h).show();try{localStorage.setItem('sumaiActiveTab',h);}catch(e){}} $links.on('click',function(e){e.preventDefault();showTab($(this).attr('href'));});showTab(window.location.hash||localStorage.getItem('sumaiActiveTab')); $('#test-api-btn').on('click',function(){var $b=$(this),$r=$('#api-test-res'),$k=$('#f_key'),t='';if($k.length)t=($k.val()==='********************')?'':$k.val();$b.prop('disabled',true).text('...');$r.html('<span class="spinner is-active"></span>').css('color','');$.post(ajaxurl,{action:'sumai_test_api_key',_ajax_nonce:'<?php echo wp_create_nonce('sumai_test_api_key_nonce');?>',api_key_to_test:t},function(r){$r.html((r.success?'✅ ':'❌ ')+r.data.message).css('color',r.success?'green':'#d63638');},'json').fail(function(){$r.html('❌ AJAX Error');}).always(function(){$b.prop('disabled',false).text('Test');});}); $('#test-feed-btn').on('click',function(){var $b=$(this),$r=$('#feed-test-res');$b.prop('disabled',true).text('...');$r.html('<span class="spinner is-active"></span>').css('color','').show();$.post(ajaxurl,{action:'sumai_test_feeds',_ajax_nonce:'<?php echo wp_create_nonce('sumai_test_feeds_nonce');?>'},function(r){if(r.success)$r.html(r.data.message).css('color','');else $r.html('❌ Error: '+r.data.message).css('color','#d63638');},'json').fail(function(){$r.html('❌ AJAX Error');}).always(function(){$b.prop('disabled',false).text('Test');});});});</script>
+    <div id="tab-advanced" class="tab-content" style="display:none;">
+        <h2>Advanced</h2>
+        <div class="card">
+            <h3>Generate Now</h3>
+            <form name="sumai_generate_now" method="post">
+                <p>
+                    <label><input type="radio" name="draft_mode" value="0" <?php checked(0,$opts['draft_mode'])?>> Publish</label>
+                    <label><input type="radio" name="draft_mode" value="1" <?php checked(1,$opts['draft_mode'])?>> Draft</label>
+                </p>
+                <input type="submit" name="sumai_generate_now" class="button button-primary" value="Generate Now">
+                <?php wp_nonce_field('sumai_generate_now_action');?>
+            </form>
+            <div id="sumai-status-container" style="display:none; margin-top: 15px;">
+                <div class="sumai-status-header" style="margin-bottom: 10px; font-weight: bold;">Generation Status:</div>
+                <div class="sumai-status-message" style="padding: 10px; background: #f8f8f8; border-left: 4px solid #2271b1;"></div>
+            </div>
+        </div>
+        <div class="card">
+            <h3>Test Feeds</h3>
+            <button type="button" id="test-feed-btn" class="button">Test</button>
+            <div id="feed-test-res"></div>
+        </div>
+        <div class="card">
+            <h3>External Cron</h3>
+            <?php 
+            $tok=get_option(SUMAI_CRON_TOKEN_OPTION); 
+            if($tok){
+                $url=add_query_arg(['sumai_trigger'=>'1','token'=>$tok],site_url('/')); 
+                echo '<input type="text" value="'.esc_url($url).'" readonly onfocus="this.select();">';
+                echo '<p><code>wget -qO- \''.esc_url($url).'\' > /dev/null</code></p>';
+            } else {
+                echo '<p>Save settings.</p>';
+            }
+            ?>
+        </div>
+    </div>
+    <div id="tab-debug" class="tab-content" style="display:none;"><h2>Debug</h2><?php sumai_render_debug_info();?></div>
+    </div></div>
+    <style>
+    .card{padding:15px;border:1px solid #ccc;background:#fff;margin:20px 0;}
+    .nav-tab-wrapper{margin-bottom:20px;}
+    #api-test-res,#feed-test-res{margin-left:10px;vertical-align:middle;}
+    #feed-test-res{display:none;white-space:pre-wrap;font-family:monospace;max-height:300px;overflow-y:auto;background:#f9f9f9;padding:10px;border:1px solid #ccc;}
+    </style>
+    <script>
+    // Initialize status tracking if we have a status ID from a form submission
+    jQuery(document).ready(function($) {
+        if (typeof sumaiStatusId !== 'undefined') {
+            $('#sumai-status-container').show();
+            $('.sumai-status-message').html('<span class="spinner is-active" style="float:left; margin-right:10px;"></span> Starting generation process...');
+            
+            // Set the status ID in the admin.js script
+            window.currentStatusId = sumaiStatusId;
+            
+            // Start polling
+            if (typeof startStatusPolling === 'function') {
+                startStatusPolling();
+            }
+        }
+    });
+    </script>
     <?php
 }
 
@@ -634,3 +826,67 @@ function sumai_ensure_log_dir(): ?string { static $p=null,$c=false; if($c)return
 function sumai_log_event(string $msg, bool $is_error=false) { $file=sumai_ensure_log_dir(); if(!$file){error_log("Sumai ".($is_error?'[ERR]':'[INFO]')."(Log N/A): ".$msg); return;} $ts=wp_date('Y-m-d H:i:s T'); $lvl=$is_error?' [ERROR] ':' [INFO]  '; $line='['.$ts.']'.$lvl.trim(preg_replace('/\s+/',' ',wp_strip_all_tags($msg))).PHP_EOL; @file_put_contents($file,$line,FILE_APPEND|LOCK_EX); }
 
 function sumai_prune_logs() { $file=sumai_ensure_log_dir(); if(!$file||!is_readable($file)||!is_writable($file)) return; $lines=@file($file,4|2); if(empty($lines))return; $cutoff=time()-SUMAI_LOG_TTL; $keep=[]; $pruned=0; foreach($lines as $line){$ts=false; if(preg_match('/^\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} [A-Z\/+-\w\:]+)\]/',$line,$m)){try{$dt=new DateTime($m[1]);$ts=$dt->getTimestamp();}catch(Exception $e){$ts=strtotime($m[1]);}} if($ts!==false&&$ts>=$cutoff)$keep[]=$line; else $pruned++;} if($pruned>0){$new_content=empty($keep)?'':implode(PHP_EOL,$keep).PHP_EOL; @file_put_contents($file,$new_content,LOCK_EX); } }
+
+/* -------------------------------------------------------------------------
+ * 10.1 STATUS TRACKING
+ * ------------------------------------------------------------------------- */
+
+/**
+ * Updates the generation status with a new message.
+ *
+ * @param string $status_id Unique ID for this generation process
+ * @param string $message Status message
+ * @param string $status Status type (pending, processing, complete, error)
+ * @param array $data Additional data to store with the status
+ * @return bool Success or failure
+ */
+function sumai_update_status(string $status_id, string $message, string $status = 'processing', array $data = []): bool {
+    $transient_name = SUMAI_STATUS_TRANSIENT . $status_id;
+    $status_data = [
+        'message' => $message,
+        'status' => $status,
+        'timestamp' => current_time('timestamp'),
+        'data' => $data
+    ];
+    
+    // Also log the status update
+    sumai_log_event("Status [{$status_id}]: {$status} - {$message}");
+    
+    // Store for 1 hour
+    return set_transient($transient_name, $status_data, HOUR_IN_SECONDS);
+}
+
+/**
+ * Gets the current generation status.
+ *
+ * @param string $status_id Unique ID for this generation process
+ * @return array|false Status data or false if not found
+ */
+function sumai_get_status(string $status_id) {
+    $transient_name = SUMAI_STATUS_TRANSIENT . $status_id;
+    return get_transient($transient_name);
+}
+
+/**
+ * Generates a unique status ID.
+ *
+ * @return string Unique status ID
+ */
+function sumai_generate_status_id(): string {
+    return uniqid('sumai_', true);
+}
+
+/**
+ * Clears a status when it's no longer needed.
+ *
+ * @param string $status_id Unique ID for this generation process
+ * @return bool Success or failure
+ */
+function sumai_clear_status(string $status_id): bool {
+    $transient_name = SUMAI_STATUS_TRANSIENT . $status_id;
+    return delete_transient($transient_name);
+}
+
+/* -------------------------------------------------------------------------
+ * 11. ADMIN SETTINGS PAGE
+ * ------------------------------------------------------------------------- */
