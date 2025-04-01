@@ -358,8 +358,20 @@ function sumai_process_content(string $content, string $context_prompt, string $
 function sumai_fetch_new_articles_content( array $feed_urls, bool $force_fetch = false ): array {
     if (!function_exists('fetch_feed')) { include_once ABSPATH.WPINC.'/feed.php'; }
     if (!function_exists('fetch_feed')) { sumai_log_event('Error: fetch_feed unavailable.', true); return ['', []]; }
-    $content = ''; $new_guids = []; $now = time(); $char_count = 0; $processed = get_option(SUMAI_PROCESSED_GUIDS_OPTION, []);
+    $content = ''; 
+    $new_guids = []; 
+    $now = time(); 
+    $char_count = 0; 
+    $processed = get_option(SUMAI_PROCESSED_GUIDS_OPTION, []);
+    $total_articles_added = 0; // Track total articles added across all feeds
+    
     foreach ($feed_urls as $url) { 
+        // Stop if we've already added 3 articles total
+        if ($total_articles_added >= 3) {
+            sumai_log_event('Maximum of 3 articles reached, skipping remaining feeds.');
+            break;
+        }
+        
         $url = esc_url_raw(trim($url)); 
         if (empty($url)) continue; 
 
@@ -382,11 +394,18 @@ function sumai_fetch_new_articles_content( array $feed_urls, bool $force_fetch =
             unset($feed); // Clean up feed object
             continue; 
         }
-        $added = 0; 
+        
+        $article_added_for_this_feed = false; // Track if we've added an article from this feed
         $feed_title = $feed->get_title() ?: parse_url($url, PHP_URL_HOST); // Get feed title once
+        
         foreach ($items as $item) { 
+            // Skip if we already added an article from this feed
+            if ($article_added_for_this_feed) {
+                break;
+            }
+            
             $guid = $item->get_id(true); 
-            // Optimization: Combine GUID checks for slightly better readability
+            // Skip if we've already processed this article
             if (isset($new_guids[$guid]) || (!$force_fetch && isset($processed[$guid]))) { 
                 continue; 
             }
@@ -413,11 +432,19 @@ function sumai_fetch_new_articles_content( array $feed_urls, bool $force_fetch =
             $content .= $formatted_content; 
             $char_count += $content_length; 
             $new_guids[$guid] = $now; 
-            $added++; 
+            $article_added_for_this_feed = true; // Mark that we've added an article from this feed
+            $total_articles_added++; // Increment total articles counter
+            
+            sumai_log_event("Added article '{$item_title}' from feed '{$feed_title}'. Total articles: {$total_articles_added}/3");
+            
+            // Break if we've reached the maximum of 3 articles total
+            if ($total_articles_added >= 3) {
+                break;
+            }
         } 
         unset($feed, $items, $feed_title); // Clean up variables for this feed
     } 
-    sumai_log_event("Fetched content: " . $char_count . " characters, " . count($new_guids) . " new items."); // Log summary
+    sumai_log_event("Fetched content: " . $char_count . " characters, " . count($new_guids) . " new items from " . $total_articles_added . " feeds."); // Log summary
     return [$content, $new_guids];
 }
 
