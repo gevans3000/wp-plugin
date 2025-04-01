@@ -346,76 +346,30 @@ function sumai_test_feeds(array $feed_urls): string { if (!function_exists('fetc
  * @return array Array of lines or an array with a single error message.
  */
 function sumai_read_log_tail(string $filepath, int $lines = 50, int $buffer = 4096): array {
-    // Check if file exists and is readable before attempting to open
+    // Check if file exists and is readable
     if (!file_exists($filepath) || !is_readable($filepath)) {
         return ['Error: Log file does not exist or is not readable.'];
     }
 
+    // Handle empty file case
+    if (filesize($filepath) === 0) {
+        return [];
+    }
+
     try {
-        $handle = @fopen($filepath, 'r');
-        if (!$handle) {
-            // Specific error if fopen fails despite readable check (e.g., open_basedir)
-            return ['Error: Could not open log file. Check server restrictions (e.g., open_basedir).'];
+        // Simple approach for small files or when we need all lines
+        $content = file_get_contents($filepath);
+        if ($content === false) {
+            return ['Error: Failed to read log file.'];
         }
-
-        $line_counter = $lines;
-        $pos = -2;
-        $output = '';
-
-        // Attempt to seek to the end of the file
-        if (@fseek($handle, 0, SEEK_END) === -1) {
-            @fclose($handle);
-            return ['Error: Could not seek to end of log file.'];
-        }
-        $file_size = @ftell($handle);
-        if ($file_size === false) {
-            @fclose($handle);
-            return ['Error: Could not determine log file size.'];
-        }
-
-        // Read backwards chunk by chunk until enough lines are found or file start is reached
-        while ($line_counter > 0 && $file_size + $pos >= 0) {
-            $seek_pos = max(0, $file_size + $pos - $buffer); // Calculate position to seek to
-            $read_len = min($buffer, $file_size - $seek_pos); // Calculate bytes to read
-
-            if (@fseek($handle, $seek_pos, SEEK_SET) === -1) {
-                @fclose($handle);
-                return ['Error: Failed seeking backwards in log file.'];
-            }
-
-            $chunk = @fread($handle, $read_len);
-            if ($chunk === false) {
-                @fclose($handle);
-                return ['Error: Failed reading chunk from log file.'];
-            }
-
-            // Prepend the chunk to the output and count newlines
-            $output = $chunk . $output;
-            // Count lines found in the current output buffer
-            $line_counter = $lines - substr_count(rtrim($output, "\n"), "\n"); // rtrim ensures last line without newline is counted
-
-            // Move position backwards for the next iteration
-            $pos -= $read_len;
-
-            // Break if we've reached the beginning of the file
-            if ($seek_pos == 0) {
-                break;
-            }
-        }
-
-        @fclose($handle);
-
-        // Split the collected output into lines and return the tail
-        $log_lines = preg_split('/\r\n|\r|\n/', trim($output)); // Handles different newline types
-        return array_slice($log_lines, -$lines);
-
+        
+        // Split into lines, handling all line ending types
+        $all_lines = preg_split('/\r\n|\r|\n/', rtrim($content));
+        $total_lines = count($all_lines);
+        
+        // Return only the requested number of lines from the end
+        return array_slice($all_lines, max(0, $total_lines - $lines), min($lines, $total_lines));
     } catch (\Throwable $e) {
-        // Catch any unexpected errors during file operations
-        // Ensure handle is closed if it was opened
-        if (isset($handle) && is_resource($handle)) {
-            @fclose($handle);
-        }
-        // Provide a generic error message including the exception details
         return ['Error: Exception during log reading - ' . esc_html($e->getMessage())];
     }
 }

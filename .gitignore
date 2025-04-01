@@ -7,3 +7,8 @@ node_modules/
 .DS_Store
 *.log
 .windsurfrules
+sumai.zip
+/tests
+deploy-to-local.bat
+test-plugin.php
+wp-content/plugins/sumai/test-plugin.php
