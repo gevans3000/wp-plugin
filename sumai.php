@@ -30,7 +30,6 @@ define( 'SUMAI_MAX_INPUT_CHARS', 25000 );
 define( 'SUMAI_PROCESSED_GUID_TTL', 30 * DAY_IN_SECONDS );
 define( 'SUMAI_LOG_TTL', 30 * DAY_IN_SECONDS );
 define( 'SUMAI_PROCESS_CONTENT_ACTION', 'sumai_process_content_action' );
-define( 'SUMAI_ACTION_SCHEDULER_HOOK', 'action_scheduler_run_schedule' );
 
 /* -------------------------------------------------------------------------
  * 1. ACTIVATION & DEACTIVATION HOOKS
@@ -51,7 +50,6 @@ function sumai_activate() {
     if (!wp_next_scheduled(SUMAI_ROTATE_TOKEN_HOOK)) wp_schedule_event(time() + WEEK_IN_SECONDS, 'weekly', SUMAI_ROTATE_TOKEN_HOOK);
     if (!get_option(SUMAI_CRON_TOKEN_OPTION)) sumai_rotate_cron_token();
     if (!wp_next_scheduled(SUMAI_PRUNE_LOGS_HOOK)) wp_schedule_event(time() + DAY_IN_SECONDS, 'daily', SUMAI_PRUNE_LOGS_HOOK);
-    if (!wp_next_scheduled(SUMAI_ACTION_SCHEDULER_HOOK)) wp_schedule_event(time(), 'sumai_action_scheduler', SUMAI_ACTION_SCHEDULER_HOOK);
     sumai_log_event('Plugin activated. V' . get_file_data(__FILE__, ['Version' => 'Version'])['Version']);
 }
 
@@ -59,7 +57,6 @@ function sumai_deactivate() {
     wp_clear_scheduled_hook(SUMAI_CRON_HOOK);
     wp_clear_scheduled_hook(SUMAI_ROTATE_TOKEN_HOOK);
     wp_clear_scheduled_hook(SUMAI_PRUNE_LOGS_HOOK);
-    wp_clear_scheduled_hook(SUMAI_ACTION_SCHEDULER_HOOK);
     sumai_log_event('Plugin deactivated.');
 }
 
@@ -73,24 +70,29 @@ function sumai_deactivate() {
  * @return bool True if Action Scheduler is available, false otherwise.
  */
 function sumai_check_action_scheduler(): bool {
-    if (!class_exists('ActionScheduler')) {
-        // Check for WooCommerce's Action Scheduler
-        if (file_exists(WP_PLUGIN_DIR . '/woocommerce/includes/libraries/action-scheduler/action-scheduler.php')) {
-            require_once WP_PLUGIN_DIR . '/woocommerce/includes/libraries/action-scheduler/action-scheduler.php';
-            return class_exists('ActionScheduler');
-        }
-        
-        // Check for standalone Action Scheduler plugin
-        if (file_exists(WP_PLUGIN_DIR . '/action-scheduler/action-scheduler.php')) {
-            require_once WP_PLUGIN_DIR . '/action-scheduler/action-scheduler.php';
-            return class_exists('ActionScheduler');
-        }
-        
-        sumai_log_event('Action Scheduler not found. Falling back to synchronous processing.', true);
+    // First check if Action Scheduler functions are already available
+    if (function_exists('as_schedule_single_action') && function_exists('as_has_scheduled_action')) {
+        return true;
+    }
+    
+    // Don't try to load Action Scheduler during plugin activation
+    if (defined('WP_INSTALLING') && WP_INSTALLING) {
         return false;
     }
     
-    return true;
+    // Check for WooCommerce's Action Scheduler
+    if (file_exists(WP_PLUGIN_DIR . '/woocommerce/includes/libraries/action-scheduler/action-scheduler.php')) {
+        include_once WP_PLUGIN_DIR . '/woocommerce/includes/libraries/action-scheduler/action-scheduler.php';
+        return function_exists('as_schedule_single_action');
+    }
+    
+    // Check for standalone Action Scheduler plugin
+    if (file_exists(WP_PLUGIN_DIR . '/action-scheduler/action-scheduler.php')) {
+        include_once WP_PLUGIN_DIR . '/action-scheduler/action-scheduler.php';
+        return function_exists('as_schedule_single_action');
+    }
+    
+    return false;
 }
 
 /* -------------------------------------------------------------------------
@@ -127,7 +129,6 @@ add_action('update_option_'.SUMAI_SETTINGS_OPTION, 'sumai_schedule_daily_event',
 add_action(SUMAI_CRON_HOOK, 'sumai_generate_daily_summary'); // Direct call
 add_action(SUMAI_ROTATE_TOKEN_HOOK, 'sumai_rotate_cron_token');
 add_action(SUMAI_PRUNE_LOGS_HOOK, 'sumai_prune_logs');
-add_action(SUMAI_PROCESS_CONTENT_ACTION, 'sumai_process_content_action');
 
 /* -------------------------------------------------------------------------
  * 3. EXTERNAL CRON TRIGGER
@@ -171,8 +172,11 @@ function sumai_generate_daily_summary( bool $force_fetch = false ) {
         if (empty($new_content)) { sumai_log_event('No new content found. Skipping summary.'); return false; }
         sumai_log_event('Fetched '.mb_strlen($new_content).' chars new content.');
 
-        // Schedule the background processing instead of calling sumai_summarize_text directly
-        if (sumai_check_action_scheduler()) {
+        // Check if Action Scheduler is available and properly loaded
+        $has_action_scheduler = sumai_check_action_scheduler();
+        
+        // Schedule the background processing if Action Scheduler is available
+        if ($has_action_scheduler && function_exists('as_schedule_single_action')) {
             // Prepare arguments for the background action
             $action_args = [
                 'content' => $new_content,
@@ -183,6 +187,11 @@ function sumai_generate_daily_summary( bool $force_fetch = false ) {
                 'post_signature' => $options['post_signature'] ?? '',
                 'guids_to_add' => $guids_to_add
             ];
+            
+            // Register the action handler if not already registered
+            if (!has_action(SUMAI_PROCESS_CONTENT_ACTION)) {
+                add_action(SUMAI_PROCESS_CONTENT_ACTION, 'sumai_process_content_action');
+            }
             
             // Schedule the background action
             as_schedule_single_action(time(), SUMAI_PROCESS_CONTENT_ACTION, [$action_args]);
