@@ -29,6 +29,8 @@ define( 'SUMAI_FEED_ITEM_LIMIT', 7 );
 define( 'SUMAI_MAX_INPUT_CHARS', 25000 );
 define( 'SUMAI_PROCESSED_GUID_TTL', 30 * DAY_IN_SECONDS );
 define( 'SUMAI_LOG_TTL', 30 * DAY_IN_SECONDS );
+define( 'SUMAI_PROCESS_CONTENT_ACTION', 'sumai_process_content_action' );
+define( 'SUMAI_ACTION_SCHEDULER_HOOK', 'action_scheduler_run_schedule' );
 
 /* -------------------------------------------------------------------------
  * 1. ACTIVATION & DEACTIVATION HOOKS
@@ -49,6 +51,7 @@ function sumai_activate() {
     if (!wp_next_scheduled(SUMAI_ROTATE_TOKEN_HOOK)) wp_schedule_event(time() + WEEK_IN_SECONDS, 'weekly', SUMAI_ROTATE_TOKEN_HOOK);
     if (!get_option(SUMAI_CRON_TOKEN_OPTION)) sumai_rotate_cron_token();
     if (!wp_next_scheduled(SUMAI_PRUNE_LOGS_HOOK)) wp_schedule_event(time() + DAY_IN_SECONDS, 'daily', SUMAI_PRUNE_LOGS_HOOK);
+    if (!wp_next_scheduled(SUMAI_ACTION_SCHEDULER_HOOK)) wp_schedule_event(time(), 'sumai_action_scheduler', SUMAI_ACTION_SCHEDULER_HOOK);
     sumai_log_event('Plugin activated. V' . get_file_data(__FILE__, ['Version' => 'Version'])['Version']);
 }
 
@@ -56,7 +59,38 @@ function sumai_deactivate() {
     wp_clear_scheduled_hook(SUMAI_CRON_HOOK);
     wp_clear_scheduled_hook(SUMAI_ROTATE_TOKEN_HOOK);
     wp_clear_scheduled_hook(SUMAI_PRUNE_LOGS_HOOK);
+    wp_clear_scheduled_hook(SUMAI_ACTION_SCHEDULER_HOOK);
     sumai_log_event('Plugin deactivated.');
+}
+
+/* -------------------------------------------------------------------------
+ * 1.1. ACTION SCHEDULER INTEGRATION
+ * ------------------------------------------------------------------------- */
+
+/**
+ * Checks if Action Scheduler is available and loads it if needed.
+ * 
+ * @return bool True if Action Scheduler is available, false otherwise.
+ */
+function sumai_check_action_scheduler(): bool {
+    if (!class_exists('ActionScheduler')) {
+        // Check for WooCommerce's Action Scheduler
+        if (file_exists(WP_PLUGIN_DIR . '/woocommerce/includes/libraries/action-scheduler/action-scheduler.php')) {
+            require_once WP_PLUGIN_DIR . '/woocommerce/includes/libraries/action-scheduler/action-scheduler.php';
+            return class_exists('ActionScheduler');
+        }
+        
+        // Check for standalone Action Scheduler plugin
+        if (file_exists(WP_PLUGIN_DIR . '/action-scheduler/action-scheduler.php')) {
+            require_once WP_PLUGIN_DIR . '/action-scheduler/action-scheduler.php';
+            return class_exists('ActionScheduler');
+        }
+        
+        sumai_log_event('Action Scheduler not found. Falling back to synchronous processing.', true);
+        return false;
+    }
+    
+    return true;
 }
 
 /* -------------------------------------------------------------------------
@@ -93,6 +127,7 @@ add_action('update_option_'.SUMAI_SETTINGS_OPTION, 'sumai_schedule_daily_event',
 add_action(SUMAI_CRON_HOOK, 'sumai_generate_daily_summary'); // Direct call
 add_action(SUMAI_ROTATE_TOKEN_HOOK, 'sumai_rotate_cron_token');
 add_action(SUMAI_PRUNE_LOGS_HOOK, 'sumai_prune_logs');
+add_action(SUMAI_PROCESS_CONTENT_ACTION, 'sumai_process_content_action');
 
 /* -------------------------------------------------------------------------
  * 3. EXTERNAL CRON TRIGGER
@@ -136,11 +171,85 @@ function sumai_generate_daily_summary( bool $force_fetch = false ) {
         if (empty($new_content)) { sumai_log_event('No new content found. Skipping summary.'); return false; }
         sumai_log_event('Fetched '.mb_strlen($new_content).' chars new content.');
 
-        $summary_result = sumai_summarize_text($new_content, $options['context_prompt'] ?? '', $options['title_prompt'] ?? '', $api_key);
-        unset($new_content);
-        if (!$summary_result || empty($summary_result['title'])) { sumai_log_event('Error: Failed to get summary/title from API.', true); return false; }
-        sumai_log_event('Summary & title generated.');
+        // Schedule the background processing instead of calling sumai_summarize_text directly
+        if (sumai_check_action_scheduler()) {
+            // Prepare arguments for the background action
+            $action_args = [
+                'content' => $new_content,
+                'context_prompt' => $options['context_prompt'] ?? '',
+                'title_prompt' => $options['title_prompt'] ?? '',
+                'api_key' => $api_key,
+                'draft_mode' => $options['draft_mode'] ?? 0,
+                'post_signature' => $options['post_signature'] ?? '',
+                'guids_to_add' => $guids_to_add
+            ];
+            
+            // Schedule the background action
+            as_schedule_single_action(time(), SUMAI_PROCESS_CONTENT_ACTION, [$action_args]);
+            sumai_log_event('Content fetched, background processing scheduled.');
+            return true;
+        } else {
+            // Fallback to synchronous processing if Action Scheduler isn't available
+            sumai_log_event('Action Scheduler not available, processing synchronously.');
+            return sumai_process_content(
+                $new_content,
+                $options['context_prompt'] ?? '',
+                $options['title_prompt'] ?? '',
+                $api_key,
+                $options['draft_mode'] ?? 0,
+                $options['post_signature'] ?? '',
+                $guids_to_add
+            );
+        }
+    } catch (\Throwable $e) {
+        sumai_log_event("FATAL during generation: ".$e->getMessage()." L".$e->getLine()." F".basename($e->getFile()), true);
+        return false;
+    }
+}
 
+/**
+ * Processes the fetched content in the background.
+ * This function is called by the Action Scheduler.
+ *
+ * @param array $args Arguments for content processing.
+ * @return bool|int False on failure, post ID on success.
+ */
+function sumai_process_content_action(array $args): bool|int {
+    sumai_log_event('Starting background content processing.');
+    return sumai_process_content(
+        $args['content'],
+        $args['context_prompt'],
+        $args['title_prompt'],
+        $args['api_key'],
+        $args['draft_mode'],
+        $args['post_signature'],
+        $args['guids_to_add']
+    );
+}
+
+/**
+ * Processes the fetched content by calling the OpenAI API and creating a post.
+ *
+ * @param string $content The content to summarize.
+ * @param string $context_prompt The context prompt for summarization.
+ * @param string $title_prompt The title prompt for summarization.
+ * @param string $api_key The OpenAI API key.
+ * @param int $draft_mode Whether to create a draft post.
+ * @param string $post_signature Signature to append to the post.
+ * @param array $guids_to_add GUIDs to mark as processed.
+ * @return bool|int False on failure, post ID on success.
+ */
+function sumai_process_content(string $content, string $context_prompt, string $title_prompt, string $api_key, int $draft_mode, string $post_signature, array $guids_to_add): bool|int {
+    try {
+        $summary_result = sumai_summarize_text($content, $context_prompt, $title_prompt, $api_key);
+        unset($content); // Free up memory
+        
+        if (!$summary_result || empty($summary_result['title'])) { 
+            sumai_log_event('Error: Failed to get summary/title from API.', true); 
+            return false; 
+        }
+        
+        sumai_log_event('Summary & title generated.');
         sumai_log_event('Preparing to create post...');
 
         // Use the raw title directly
@@ -151,17 +260,37 @@ function sumai_generate_daily_summary( bool $force_fetch = false ) {
         if (!function_exists('get_userdata')) {
              sumai_log_event('get_userdata() missing. Loading user.php...');
              require_once ABSPATH . WPINC . '/user.php';
-             if (!function_exists('get_userdata')) { sumai_log_event('FATAL: Failed loading user.php!', true); return false; }
+             if (!function_exists('get_userdata')) { 
+                 sumai_log_event('FATAL: Failed loading user.php!', true); 
+                 return false; 
+             }
         }
 
         $author_id = (is_user_logged_in() && function_exists('get_current_user_id') && ($uid = get_current_user_id()) > 0) ? $uid : 1;
         $author = get_userdata($author_id);
         if (!$author || !$author->has_cap('publish_posts')) {
-            $author_id = 1; $author = get_userdata($author_id);
-            if (!$author || !$author->has_cap('publish_posts')) { sumai_log_event("Error: Author ID {$author_id} invalid/cannot publish.", true); return false; }
+            $author_id = 1; 
+            $author = get_userdata($author_id);
+            if (!$author || !$author->has_cap('publish_posts')) { 
+                sumai_log_event("Error: Author ID {$author_id} invalid/cannot publish.", true); 
+                return false; 
+            }
         }
 
-        $post_data = ['post_title'=>$post_title_to_use, 'post_content'=>$summary_result['content'], 'post_status'=>($options['draft_mode']??0)?'draft':'publish', 'post_type'=>'post', 'post_author'=>$author_id, 'meta_input'=>['_sumai_generated'=>true]];
+        // Apply post signature if available
+        $post_content = $summary_result['content'];
+        if (!empty($post_signature)) {
+            $post_content = sumai_append_signature_to_content($post_content);
+        }
+
+        $post_data = [
+            'post_title' => $post_title_to_use, 
+            'post_content' => $post_content, 
+            'post_status' => $draft_mode ? 'draft' : 'publish', 
+            'post_type' => 'post', 
+            'post_author' => $author_id, 
+            'meta_input' => ['_sumai_generated' => true]
+        ];
 
         // --- Load post.php JUST BEFORE wp_insert_post ---
         if (!function_exists('wp_insert_post')) {
@@ -169,31 +298,52 @@ function sumai_generate_daily_summary( bool $force_fetch = false ) {
              sumai_log_event('Loading post.php JIT before insert from: ' . $post_file);
              if (file_exists($post_file)) {
                  require_once $post_file;
-                 if (!function_exists('wp_insert_post')) { sumai_log_event('FATAL: Failed loading wp_insert_post after require!', true); return false; }
-             } else { sumai_log_event('FATAL: post.php not found!', true); return false; }
+                 if (!function_exists('wp_insert_post')) { 
+                     sumai_log_event('FATAL: Failed loading wp_insert_post after require!', true); 
+                     return false; 
+                 }
+             } else { 
+                 sumai_log_event('FATAL: post.php not found!', true); 
+                 return false; 
+             }
         }
         // --- End Load ---
 
         $post_id = wp_insert_post($post_data, true);
 
-        if (is_wp_error($post_id)) { sumai_log_event("Error creating post: ".$post_id->get_error_message(), true); return false; }
+        if (is_wp_error($post_id)) { 
+            sumai_log_event("Error creating post: ".$post_id->get_error_message(), true); 
+            return false; 
+        }
+        
         sumai_log_event("Post created ID: {$post_id}, Status: {$post_data['post_status']}.");
 
         if (!empty($guids_to_add)) {
-            $guids = get_option(SUMAI_PROCESSED_GUIDS_OPTION, []); $guids = array_merge($guids, $guids_to_add);
-            $now = time(); $pruned = 0; foreach ($guids as $guid => $ts) { if ($ts < ($now - SUMAI_PROCESSED_GUID_TTL)) { unset($guids[$guid]); $pruned++; } }
+            $guids = get_option(SUMAI_PROCESSED_GUIDS_OPTION, []); 
+            $guids = array_merge($guids, $guids_to_add);
+            $now = time(); 
+            $pruned = 0; 
+            
+            foreach ($guids as $guid => $ts) { 
+                if ($ts < ($now - SUMAI_PROCESSED_GUID_TTL)) { 
+                    unset($guids[$guid]); 
+                    $pruned++; 
+                } 
+            }
+            
             update_option(SUMAI_PROCESSED_GUIDS_OPTION, $guids);
             sumai_log_event("Processed GUIDs: Added ".count($guids_to_add).", Pruned {$pruned}. Total ".count($guids));
         }
+        
         return $post_id;
     } catch (\Throwable $e) {
-        sumai_log_event("FATAL during generation: ".$e->getMessage()." L".$e->getLine()." F".basename($e->getFile()), true);
+        sumai_log_event("FATAL during content processing: ".$e->getMessage()." L".$e->getLine()." F".basename($e->getFile()), true);
         return false;
     }
 }
 
 /* -------------------------------------------------------------------------
- * 5. FEED FETCHING & PROCESSING
+ * 5. FEED FETCHING & CONTENT PREPARATION
  * ------------------------------------------------------------------------- */
 
 function sumai_fetch_new_articles_content( array $feed_urls, bool $force_fetch = false ): array {
