@@ -12,5 +12,11 @@ sumai.zip
 deploy-to-local.bat
 test-plugin.php
 wp-content/plugins/sumai/test-plugin.php
+sumai-tests
+php-local
+basic-test.php
+mock-wp-test.php
+test-sumai.php
+deploy-to-local.ps1
+php.zip
 
-.windsurfrules
