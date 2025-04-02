@@ -3,7 +3,7 @@
  * Plugin Name: Sumai
  * Plugin URI:  https://biglife360.com/sumai
  * Description: Fetches RSS articles, summarizes with OpenAI, and posts a daily summary.
- * Version:     1.2.7
+ * Version:     1.3.0
  * Author:      biglife360.com
  * Author URI:  https://biglife360.com
  * License:     GPL2

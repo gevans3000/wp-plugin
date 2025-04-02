@@ -19,4 +19,12 @@ mock-wp-test.php
 test-sumai.php
 deploy-to-local.ps1
 php.zip
+action-scheduler-helper.php
+performance-test.php
+performance-results.html
+test-decoupling.php
+function-test.php
+function-test-results.txt
+simple-test.php
+simple-test-results.txt 
 
