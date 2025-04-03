@@ -1,7 +1,6 @@
 .env
 check-perms.php
 server-info.php
-test-env.php
 wp-content/
 node_modules/
 .DS_Store
@@ -9,22 +8,37 @@ node_modules/
 .windsurfrules
 sumai.zip
 /tests
-deploy-to-local.bat
-test-plugin.php
-wp-content/plugins/sumai/test-plugin.php
-sumai-tests
-php-local
-basic-test.php
-mock-wp-test.php
-test-sumai.php
-deploy-to-local.ps1
-php.zip
+
+# Test files and tools
+*test*.php
+*test*.bat
+*test*.ps1
+*test*.sh
+*-test.*
+test-*.*
+*-results.*
+*-results-*.*
+readable-function-test.php
+readable-action-helper.php
+performance-*.php
+performance-*.html
+action-scheduler-*.ps1
+action-scheduler-*.bat
+action-scheduler-*.sh
 action-scheduler-helper.php
-performance-test.php
-performance-results.html
-test-decoupling.php
 function-test.php
 function-test-results.txt
 simple-test.php
-simple-test-results.txt 
+simple-test-results.txt
+run-*.ps1
+run-*.bat
+run-*.sh
 
+# Deployment scripts
+deploy-to-*.bat
+deploy-to-*.ps1
+deploy-to-*.sh
+
+# Local development files
+php-local
+php.zip
