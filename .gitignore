@@ -18,6 +18,8 @@ sumai.zip
 test-*.*
 *-results.*
 *-results-*.*
+bootstrap.php
+phpunit.xml
 readable-function-test.php
 readable-action-helper.php
 performance-*.php

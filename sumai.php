@@ -729,6 +729,20 @@ function sumai_render_settings_page() {
     <script>
     // Initialize status tracking if we have a status ID from a form submission
     jQuery(document).ready(function($) {
+        // Tab functionality
+        $('.nav-tab').on('click', function(e) {
+            e.preventDefault();
+            var target = $(this).attr('href');
+            
+            // Update active tab
+            $('.nav-tab').removeClass('nav-tab-active');
+            $(this).addClass('nav-tab-active');
+            
+            // Show selected tab content, hide others
+            $('.tab-content').hide();
+            $(target).show();
+        });
+        
         if (typeof sumaiStatusId !== 'undefined') {
             $('#sumai-status-container').show();
             $('.sumai-status-message').html('<span class="spinner is-active" style="float:left; margin-right:10px;"></span> Starting generation process...');
