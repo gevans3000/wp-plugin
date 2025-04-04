@@ -6,41 +6,5 @@ node_modules/
 .DS_Store
 *.log
 .windsurfrules
-sumai.zip
-/tests
+.codeiumignore
 
-# Test files and tools
-*test*.php
-*test*.bat
-*test*.ps1
-*test*.sh
-*-test.*
-test-*.*
-*-results.*
-*-results-*.*
-bootstrap.php
-phpunit.xml
-readable-function-test.php
-readable-action-helper.php
-performance-*.php
-performance-*.html
-action-scheduler-*.ps1
-action-scheduler-*.bat
-action-scheduler-*.sh
-action-scheduler-helper.php
-function-test.php
-function-test-results.txt
-simple-test.php
-simple-test-results.txt
-run-*.ps1
-run-*.bat
-run-*.sh
-
-# Deployment scripts
-deploy-to-*.bat
-deploy-to-*.ps1
-deploy-to-*.sh
-
-# Local development files
-php-local
-php.zip
