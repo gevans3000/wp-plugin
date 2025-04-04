@@ -3,7 +3,7 @@
  * Plugin Name: Sumai
  * Plugin URI:  https://biglife360.com/sumai
  * Description: Fetches RSS articles, summarizes with OpenAI, and posts a daily summary.
- * Version:     1.3.1
+ * Version:     1.4.0
  * Author:      biglife360.com
  * Author URI:  https://biglife360.com
  * License:     GPL2
@@ -253,84 +253,164 @@ function sumai_generate_daily_summary_event( bool $force_fetch = false, bool $dr
  * @param string $status_id Status ID for tracking progress
  * @return bool Success or failure
  */
-function sumai_generate_daily_summary( bool $force_fetch = false, bool $draft_mode = false, string $status_id = '' ) {
-    sumai_log_event('Starting daily summary generation. Force: '.($force_fetch?'Y':'N').', Draft: '.($draft_mode?'Y':'N'));
-    
+function sumai_generate_daily_summary( bool $force_fetch = false, bool $draft_mode = false, string $status_id = '' ): bool {
     if (empty($status_id)) {
         $status_id = sumai_generate_status_id();
     }
     
-    // Update status
-    sumai_update_status($status_id, 'Checking dependencies and settings...', 'processing');
+    sumai_log_event("Starting daily summary generation. Status ID: {$status_id}");
+    sumai_update_status($status_id, 'Starting summary generation...', 'pending');
     
-    // Check for Action Scheduler
+    $settings = get_option(SUMAI_SETTINGS_OPTION);
+    
+    // Validation
+    if (empty($settings['feed_urls'])) {
+        sumai_update_status($status_id, 'No feed URLs configured.', 'error');
+        sumai_log_event('No feed URLs configured.', true);
+        return false;
+    }
+    
+    if (empty($settings['api_key'])) {
+        sumai_update_status($status_id, 'OpenAI API key not configured.', 'error');
+        sumai_log_event('OpenAI API key not configured.', true);
+        return false;
+    }
+    
+    // Check for Action Scheduler availability
     if (!sumai_check_action_scheduler()) {
-        sumai_update_status($status_id, 'Action Scheduler not available. Cannot proceed.', 'error');
-        sumai_log_event('Action Scheduler not available. Cannot proceed.', true);
-        return false;
+        sumai_update_status($status_id, 'Action Scheduler not available. Attempting to process directly.', 'processing');
+        sumai_log_event('Action Scheduler not available. Attempting to process directly.', true);
+        return sumai_process_content_direct($force_fetch, $draft_mode, $status_id);
     }
     
-    // Get settings
-    $settings = get_option(SUMAI_SETTINGS_OPTION, []);
-    $api_key = sumai_get_api_key();
-    if (empty($api_key)) {
-        sumai_update_status($status_id, 'API key not configured. Cannot proceed.', 'error');
-        sumai_log_event('API key not configured. Cannot proceed.', true);
-        return false;
+    // If force draft mode is enabled, override the setting
+    if ($draft_mode) {
+        $settings['draft_mode'] = 1;
     }
     
-    // Get feed URLs
-    $feed_urls = array_filter(explode("\n", $settings['feed_urls'] ?? ''));
+    // Parse and clean feed URLs
+    $feed_urls = array_map('trim', explode("\n", $settings['feed_urls']));
+    $feed_urls = array_filter($feed_urls);
+    
     if (empty($feed_urls)) {
-        sumai_update_status($status_id, 'No feed URLs configured. Cannot proceed.', 'error');
-        sumai_log_event('No feed URLs configured. Cannot proceed.', true);
+        sumai_update_status($status_id, 'No valid feed URLs found after parsing.', 'error');
+        sumai_log_event('No valid feed URLs found after parsing.', true);
         return false;
     }
     
-    // Update status
-    sumai_update_status($status_id, 'Fetching articles from ' . count($feed_urls) . ' feeds...', 'processing');
+    // Fetch new content from feeds
+    sumai_update_status($status_id, 'Fetching content from RSS feeds...', 'processing');
     
-    // Fetch content
-    list($content, $guids_to_add) = sumai_fetch_new_articles_content($feed_urls, $force_fetch);
+    $result = sumai_fetch_new_articles_content($feed_urls, $force_fetch);
     
-    if (empty($content)) {
-        sumai_update_status($status_id, 'No new content found to summarize.', 'complete');
-        sumai_log_event('No new content found to summarize.');
+    if (is_wp_error($result)) {
+        sumai_update_status(
+            $status_id, 
+            'Error fetching feeds: ' . $result->get_error_message(), 
+            'error'
+        );
+        sumai_log_event('Error fetching feeds: ' . $result->get_error_message(), true);
         return false;
     }
     
-    // Update status
-    sumai_update_status($status_id, 'Found ' . count($guids_to_add) . ' new articles. Scheduling processing...', 'processing');
-    
-    // Schedule the background processing
-    $context_prompt = $settings['context_prompt'] ?? '';
-    $title_prompt = $settings['title_prompt'] ?? '';
-    $post_signature = $settings['post_signature'] ?? '';
-    
-    // Use draft mode from settings if not explicitly set
-    if ($draft_mode === false && isset($settings['draft_mode'])) {
-        $draft_mode = (bool)$settings['draft_mode'];
+    if (empty($result['content'])) {
+        sumai_update_status(
+            $status_id, 
+            'No new content found in feeds. Skipping summary generation.', 
+            'complete',
+            ['articles_checked' => $result['articles_checked'] ?? 0]
+        );
+        sumai_log_event('No new content found in feeds. Skipping summary generation.');
+        return true; // Not an error, just nothing to process
     }
     
-    // Schedule the background processing with the status ID
-    as_schedule_single_action(
-        time(),
-        SUMAI_PROCESS_CONTENT_ACTION,
+    // Update status with data about what was fetched
+    sumai_update_status(
+        $status_id, 
+        'Feed content fetched. Scheduling background processing...', 
+        'processing',
         [
-            'content' => $content,
-            'context_prompt' => $context_prompt,
-            'title_prompt' => $title_prompt,
-            'api_key' => $api_key,
-            'draft_mode' => $draft_mode,
-            'post_signature' => $post_signature,
-            'guids_to_add' => $guids_to_add,
-            'status_id' => $status_id
+            'articles_processed' => count($result['guids'] ?? []),
+            'articles_checked' => $result['articles_checked'] ?? 0,
+            'content_length' => strlen($result['content'])
         ]
     );
     
-    sumai_update_status($status_id, 'Content fetched and processing scheduled in background.', 'processing');
-    sumai_log_event('Content fetched and processing scheduled in background.');
+    // Schedule background processing task
+    $args = [
+        'content' => $result['content'],
+        'context_prompt' => $settings['context_prompt'],
+        'title_prompt' => $settings['title_prompt'],
+        'api_key' => $settings['api_key'],
+        'draft_mode' => !empty($settings['draft_mode']) || $draft_mode,
+        'post_signature' => $settings['post_signature'] ?? '',
+        'guids_to_add' => $result['guids'] ?? [],
+        'status_id' => $status_id
+    ];
+    
+    // Schedule the background task with Action Scheduler
+    as_schedule_single_action(
+        time(), // Run immediately 
+        SUMAI_PROCESS_CONTENT_ACTION,
+        [$args]
+    );
+    
+    sumai_log_event("Background content processing scheduled. Status ID: {$status_id}");
     return true;
+}
+
+/**
+ * Fallback function for direct processing when Action Scheduler is not available.
+ * 
+ * @param bool $force_fetch Whether to force fetching articles even if they've been processed before
+ * @param bool $draft_mode Whether to save the post as a draft
+ * @param string $status_id Status ID for tracking progress
+ * @return bool Success or failure
+ */
+function sumai_process_content_direct(bool $force_fetch = false, bool $draft_mode = false, string $status_id = ''): bool {
+    sumai_log_event("Starting direct content processing (fallback mode).");
+    
+    $settings = get_option(SUMAI_SETTINGS_OPTION);
+    
+    // Parse and clean feed URLs
+    $feed_urls = array_map('trim', explode("\n", $settings['feed_urls']));
+    $feed_urls = array_filter($feed_urls);
+    
+    // Fetch new content from feeds
+    $result = sumai_fetch_new_articles_content($feed_urls, $force_fetch);
+    
+    if (is_wp_error($result)) {
+        sumai_update_status(
+            $status_id, 
+            'Error fetching feeds: ' . $result->get_error_message(), 
+            'error'
+        );
+        sumai_log_event('Error fetching feeds: ' . $result->get_error_message(), true);
+        return false;
+    }
+    
+    if (empty($result['content'])) {
+        sumai_update_status(
+            $status_id, 
+            'No new content found in feeds. Skipping summary generation.', 
+            'complete',
+            ['articles_checked' => $result['articles_checked'] ?? 0]
+        );
+        sumai_log_event('No new content found in feeds. Skipping summary generation.');
+        return true; // Not an error, just nothing to process
+    }
+    
+    // Process content directly since Action Scheduler is not available
+    return sumai_process_content(
+        $result['content'],
+        $settings['context_prompt'],
+        $settings['title_prompt'],
+        $settings['api_key'],
+        !empty($settings['draft_mode']) || $draft_mode,
+        $settings['post_signature'] ?? '',
+        $result['guids'] ?? [],
+        $status_id
+    );
 }
 
 /**
@@ -342,9 +422,23 @@ function sumai_generate_daily_summary( bool $force_fetch = false, bool $draft_mo
 function sumai_process_content_action(array $args) {
     sumai_log_event('Starting background content processing.');
     
+    // Extract all arguments from the first array element
+    // This is necessary because Action Scheduler passes arguments as a single nested array
+    if (isset($args[0]) && is_array($args[0])) {
+        $args = $args[0];
+    }
+    
     $status_id = $args['status_id'] ?? '';
     if (!empty($status_id)) {
         sumai_update_status($status_id, 'Starting OpenAI API processing...', 'processing');
+    }
+    
+    if (empty($args['content'])) {
+        if (!empty($status_id)) {
+            sumai_update_status($status_id, 'No content to process.', 'error');
+        }
+        sumai_log_event('No content to process in background action.', true);
+        return false;
     }
     
     return sumai_process_content(
@@ -472,15 +566,20 @@ function sumai_process_content(
  * 5. FEED FETCHING & CONTENT PREPARATION
  * ------------------------------------------------------------------------- */
 
-function sumai_fetch_new_articles_content( array $feed_urls, bool $force_fetch = false ): array {
+function sumai_fetch_new_articles_content( array $feed_urls, bool $force_fetch = false ) {
     if (!function_exists('fetch_feed')) { include_once ABSPATH.WPINC.'/feed.php'; }
-    if (!function_exists('fetch_feed')) { sumai_log_event('Error: fetch_feed unavailable.', true); return ['', []]; }
+    if (!function_exists('fetch_feed')) { 
+        sumai_log_event('Error: fetch_feed unavailable.', true); 
+        return new WP_Error('fetch_feed_unavailable', 'WordPress fetch_feed function not available'); 
+    }
+    
     $content = ''; 
     $new_guids = []; 
     $now = time(); 
     $char_count = 0; 
     $processed = get_option(SUMAI_PROCESSED_GUIDS_OPTION, []);
     $total_articles_added = 0; // Track total articles added across all feeds
+    $total_articles_checked = 0; // Track total articles checked
     
     foreach ($feed_urls as $url) { 
         // Stop if we've already added 3 articles total
@@ -516,6 +615,9 @@ function sumai_fetch_new_articles_content( array $feed_urls, bool $force_fetch =
         $feed_title = $feed->get_title() ?: parse_url($url, PHP_URL_HOST); // Get feed title once
         
         foreach ($items as $item) { 
+            // Track articles checked
+            $total_articles_checked++;
+            
             // Skip if we already added an article from this feed
             if ($article_added_for_this_feed) {
                 break;
@@ -561,8 +663,17 @@ function sumai_fetch_new_articles_content( array $feed_urls, bool $force_fetch =
         } 
         unset($feed, $items, $feed_title); // Clean up variables for this feed
     } 
-    sumai_log_event("Fetched content: " . $char_count . " characters, " . count($new_guids) . " new items from " . $total_articles_added . " feeds."); // Log summary
-    return [$content, $new_guids];
+    
+    sumai_log_event("Fetched content: " . $char_count . " characters, " . count($new_guids) . " new items from " . count($feed_urls) . " feeds. Checked " . $total_articles_checked . " articles."); // Log summary
+    
+    return [
+        'content' => $content,
+        'guids' => $new_guids,
+        'articles_checked' => $total_articles_checked,
+        'feeds_checked' => count($feed_urls),
+        'articles_processed' => $total_articles_added,
+        'char_count' => $char_count
+    ];
 }
 
 /* -------------------------------------------------------------------------
@@ -774,7 +885,7 @@ function sumai_ajax_test_feeds() { check_ajax_referer('sumai_test_feeds_nonce');
  * 10. LOGGING & DEBUGGING (Restored)
  * ------------------------------------------------------------------------- */
 
-function sumai_test_feeds(array $feed_urls): string { if (!function_exists('fetch_feed')) return "Error: fetch_feed unavailable."; $out = "--- Feed Test Results ---\nTime: ".wp_date('Y-m-d H:i:s T')."\n"; $guids = get_option(SUMAI_PROCESSED_GUIDS_OPTION, []); $out .= count($guids)." processed GUIDs.\n\n"; $new=false; $items_total=0; $new_total=0; foreach ($feed_urls as $i=>$url) { $out .= "--- Feed #".($i+1).": {$url} ---\n"; $feed = fetch_feed($url); if (is_wp_error($feed)) { $out .= "❌ Err: ".esc_html($feed->get_error_message())."\n\n"; continue; } $items = $feed->get_items(0, SUMAI_FEED_ITEM_LIMIT); $count = count($items); $items_total += $count; if (empty($items)) { $out .= "⚠️ OK but no items.\n\n"; continue; } $out .= "✅ OK: {$count} items:\n"; $feed_new = false; foreach ($items as $idx => $item) { $guid = $item->get_id(true); $title = mb_strimwidth(strip_tags($item->get_title()?:'N/A'),0,80,'...'); $out .= "- ".($idx+1).": ".esc_html($title)."\n"; if (isset($guids[$guid])) $out .= "  Status: Processed\n"; else { $out .= "  Status: ✨ NEW\n"; $feed_new=true; $new=true; $new_total++; } } if (!$feed_new && $count>0) $out .= "  ℹ️ No new items.\n"; $out .= "\n"; unset($feed,$items); } $out .= "--- Summary ---\nChecked ".count($feed_urls)." feeds, {$items_total} items.\n".($new?"✅ Detected {$new_total} NEW items.":"ℹ️ No new content."); return $out; }
+function sumai_test_feeds(array $feed_urls): string { if (!function_exists('fetch_feed')) return "Error: fetch_feed unavailable."; $out = "--- Feed Test Results ---\nTime: ".wp_date('Y-m-d H:i:s T')."\n"; $guids = get_option(SUMAI_PROCESSED_GUIDS_OPTION, []); $out .= count($guids)." processed GUIDs.\n\n"; $new=false; $items_total=0; $new_total=0; foreach ($feed_urls as $i=>$url) { $out .= "--- Feed #".($i+1).": {$url} ---\n"; $feed = fetch_feed($url); if (is_wp_error($feed)) { $out .= "❌ Err: ".esc_html($feed->get_error_message())."\n\n"; continue; } $items = $feed->get_items(0, SUMAI_FEED_ITEM_LIMIT); $count = count($items); $items_total += $count; if (empty($items)) { $out .= "⚠️ OK but no items.\n\n"; continue; } $out .= "✅ OK: {$count} items:\n"; $feed_new = false; foreach ($items as $idx => $item) { $guid = $item->get_id(true); $title = mb_strimwidth(strip_tags($item->get_title()?:'Untitled'),0,80,'...'); $out .= "- ".($idx+1).": ".esc_html($title)."\n"; if (isset($guids[$guid])) $out .= "  Status: Processed\n"; else { $out .= "  Status: ✨ NEW\n"; $feed_new=true; $new=true; $new_total++; } } if (!$feed_new && $count>0) $out .= "  ℹ️ No new items.\n"; $out .= "\n"; unset($feed,$items); } $out .= "--- Summary ---\nChecked ".count($feed_urls)." feeds, {$items_total} items.\n".($new?"✅ Detected {$new_total} NEW items.":"ℹ️ No new content."); return $out; }
 
 /**
  * Reads the last N lines from a file.
