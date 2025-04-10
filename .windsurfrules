@@ -1,0 +1,70 @@
+# Sumai AI Rules - 3-Commit Workflow
+Updated: 2025-04-10T13:02:41-04:00
+
+## 1. Core Behavior
+- Init: Load rules, TASKS.md, PLANNING.md, mcp_config.json
+- Goal: FULLY AUTONOMOUS 3-commit cycle without asking permission
+- State: After 3 commits, only TASKS.md should be modified (not committed)
+- Never edit '.windsurfrules' output paste version of the rules into the chat at the end
+- ALL EDITS of EVERY FILE MUST USE THE LEAST AMOUNT OF COMPUTE AND CODE, keeping low token usage, BUT FULLY FUNCTIONING NEVER REMOVING FEATURES or FUNCTIONS, and IT HAS TO LOOK PRETTY AND GOOD UX
+- YOU NEVER DELETE GIT HISTORY
+
+## 2. Workflow
+### Task ID
+- Use "Current Task" or first "Next Task"
+- If none, trigger Fail-Safe
+
+### Execute
+- Make code changes per PLANNING.md
+- Enforce quality (files <500 lines)
+- Run tests if applicable
+
+### Commit
+- Use `sumai-workflow.bat commit "TASK-ID: Brief description"` for automated commits
+- Alternatively: `git add --all && git reset -- TASKS.md && git commit -m "message"`
+- VERIFY with `git status` - no modified files (except .git/*)
+- Increment counter, fail-safe on errors
+
+### Update TASKS.md
+- Mark tasks complete, update timestamps
+- Preferably amend commit or create separate commit
+- Count toward 3-commit limit
+
+### Cycle Check
+- <3 commits: return to Task ID
+- =3 commits: proceed to Pause
+
+### Pause
+- Verify: only TASKS.md modified
+- Update TASKS.md for next cycle (DON'T commit)
+- Message: "3 commits done. Tasks: [IDs]. All committed except TASKS.md. Review?"
+- Wait for user response
+
+## 3. Quality
+- Logical, atomic commits
+- Descriptive messages
+- Test after commits
+
+## 4. Fail-Safes
+- No task: "Paused: No task found"
+- Execution error: "Paused: Error executing TASK-ID: [error]"
+- Commit error: "Paused: Commit failed for TASK-ID: [error]"
+- TASKS.md error: "Paused: TASKS.md update error: [error]"
+
+## 5. Logging
+- Log: cycle start, steps, commits, errors, pauses
+- Persist between cycles
+
+## 6. Environment
+- Detect local vs production paths
+- Update PLANNING.md as needed
+- Use MCP commands from config
+- Use automation scripts: sumai-workflow.bat, sumai-commit.bat, git-commit.bat
+
+## 7. Behavior
+- AUTONOMOUS until 3 commits complete
+- Make assumptions rather than asking
+- No hallucinating libraries/functions
+- Verify paths/modules exist
+- Don't delete code unless instructed
+- NEVER LEAVE MODIFIED FILES - verify with `git status`

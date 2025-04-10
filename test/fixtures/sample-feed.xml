@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <title>Sample RSS Feed</title>
+    <link>https://example.com</link>
+    <description>A sample RSS feed for testing</description>
+    <language>en-us</language>
+    <item>
+      <title>Test Article 1</title>
+      <link>https://example.com/article1</link>
+      <guid>https://example.com/article1</guid>
+      <pubDate>Mon, 08 Apr 2025 10:00:00 GMT</pubDate>
+      <description>This is the first test article description.</description>
+      <content:encoded><![CDATA[<p>This is the full content of the first test article. It contains multiple paragraphs and some formatting.</p>
+<p>Here is the second paragraph with some <strong>bold text</strong> and <em>italic text</em>.</p>
+<h2>A heading in the article</h2>
+<p>And some more content after the heading.</p>]]></content:encoded>
+    </item>
+    <item>
+      <title>Test Article 2</title>
+      <link>https://example.com/article2</link>
+      <guid>https://example.com/article2</guid>
+      <pubDate>Mon, 08 Apr 2025 11:00:00 GMT</pubDate>
+      <description>This is the second test article description.</description>
+      <content:encoded><![CDATA[<p>This is the full content of the second test article.</p>
+<p>It also contains multiple paragraphs and some formatting.</p>]]></content:encoded>
+    </item>
+    <item>
+      <title>Test Article 3</title>
+      <link>https://example.com/article3</link>
+      <guid>https://example.com/article3</guid>
+      <pubDate>Mon, 08 Apr 2025 12:00:00 GMT</pubDate>
+      <description>This is the third test article description.</description>
+      <content:encoded><![CDATA[<p>This is the full content of the third test article.</p>
+<p>It also contains multiple paragraphs and some formatting.</p>]]></content:encoded>
+    </item>
+    <item>
+      <title>Test Article 4</title>
+      <link>https://example.com/article4</link>
+      <guid>https://example.com/article4</guid>
+      <pubDate>Mon, 08 Apr 2025 13:00:00 GMT</pubDate>
+      <description>This is the fourth test article description.</description>
+      <content:encoded><![CDATA[<p>This is the full content of the fourth test article.</p>
+<p>It also contains multiple paragraphs and some formatting.</p>]]></content:encoded>
+    </item>
+    <item>
+      <title>Test Article 5</title>
+      <link>https://example.com/article5</link>
+      <guid>https://example.com/article5</guid>
+      <pubDate>Mon, 08 Apr 2025 14:00:00 GMT</pubDate>
+      <description>This is the fifth test article description.</description>
+      <content:encoded><![CDATA[<p>This is the full content of the fifth test article.</p>
+<p>It also contains multiple paragraphs and some formatting.</p>]]></content:encoded>
+    </item>
+  </channel>
+</rss>

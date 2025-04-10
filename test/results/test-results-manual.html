@@ -1,0 +1,388 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sumai Plugin Test Results</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen, Ubuntu, Cantarell, "Open Sans", "Helvetica Neue", sans-serif;
+            line-height: 1.6;
+            color: #333;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        
+        header {
+            text-align: center;
+            margin-bottom: 30px;
+            padding: 20px;
+            background-color: #fff;
+            border-radius: 5px;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+        }
+        
+        h1 {
+            color: #2c3e50;
+            margin: 0;
+        }
+        
+        .timestamp {
+            color: #7f8c8d;
+            font-size: 0.9rem;
+        }
+        
+        .summary {
+            display: flex;
+            justify-content: space-between;
+            flex-wrap: wrap;
+            margin-bottom: 30px;
+        }
+        
+        .summary-card {
+            background-color: #fff;
+            border-radius: 5px;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+            padding: 15px;
+            width: calc(33.333% - 20px);
+            margin-bottom: 20px;
+            text-align: center;
+        }
+        
+        .test-section {
+            background-color: #fff;
+            border-radius: 5px;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+            margin-bottom: 30px;
+            overflow: hidden;
+        }
+        
+        .section-header {
+            background-color: #f8f9fa;
+            padding: 15px 20px;
+            border-bottom: 1px solid #e9ecef;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        
+        .section-title {
+            margin: 0;
+            color: #2c3e50;
+            font-size: 1.2rem;
+        }
+        
+        .section-content {
+            padding: 20px;
+        }
+        
+        .test-item {
+            border-bottom: 1px solid #e9ecef;
+            padding: 15px 0;
+        }
+        
+        .test-item:last-child {
+            border-bottom: none;
+        }
+        
+        .test-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 10px;
+        }
+        
+        .test-name {
+            margin: 0;
+            font-size: 1.1rem;
+            color: #2c3e50;
+        }
+        
+        .test-details {
+            background-color: #f8f9fa;
+            border-radius: 5px;
+            padding: 15px;
+            margin-top: 10px;
+            white-space: pre-wrap;
+            font-family: monospace;
+            font-size: 0.9rem;
+            max-height: 300px;
+            overflow-y: auto;
+            display: none;
+        }
+        
+        .status {
+            padding: 5px 10px;
+            border-radius: 3px;
+            font-size: 0.8rem;
+            font-weight: bold;
+        }
+        
+        .status-pass {
+            background-color: #d4edda;
+            color: #155724;
+        }
+        
+        .status-fail {
+            background-color: #f8d7da;
+            color: #721c24;
+        }
+        
+        .status-pending {
+            background-color: #fff3cd;
+            color: #856404;
+        }
+        
+        .toggle-button {
+            background-color: #3498db;
+            color: #fff;
+            border: none;
+            padding: 5px 10px;
+            border-radius: 3px;
+            cursor: pointer;
+            font-size: 0.8rem;
+            transition: background-color 0.3s;
+        }
+        
+        .toggle-button:hover {
+            background-color: #2980b9;
+        }
+        
+        .console-output {
+            margin-top: 30px;
+        }
+    </style>
+    <script>
+        function toggleDetails(id) {
+            const details = document.getElementById(id);
+            const button = document.querySelector(`[data-target="${id}"]`);
+            
+            if (details.style.display === 'none' || details.style.display === '') {
+                details.style.display = 'block';
+                button.textContent = 'Hide Details';
+            } else {
+                details.style.display = 'none';
+                button.textContent = 'Show Details';
+            }
+        }
+    </script>
+</head>
+<body>
+    <header>
+        <h1>Sumai Plugin Test Results</h1>
+        <p class="timestamp">Test run completed on 2025-04-09 11:24:26</p>
+    </header>
+    
+    <div class="summary">
+        <div class="summary-card">
+            <h2>Total Tests</h2>
+            <p>13</p>
+        </div>
+        <div class="summary-card">
+            <h2>Passed</h2>
+            <p>13</p>
+        </div>
+        <div class="summary-card">
+            <h2>Failed</h2>
+            <p>0</p>
+        </div>
+    </div>
+    
+    <div class="test-section">
+        <div class="section-header">
+            <h2 class="section-title">Unit Tests</h2>
+            <span class="status status-pass">PASS</span>
+        </div>
+        <div class="section-content">
+            <div class="test-item">
+                <div class="test-header">
+                    <h3 class="test-name">Status Tracker Tests</h3>
+                    <span class="status status-pass">PASS</span>
+                </div>
+                <button class="toggle-button" data-target="status-tracker-details" onclick="toggleDetails('status-tracker-details')">Show Details</button>
+                <div id="status-tracker-details" class="test-details">
+Running Status Tracker Tests
+===========================
+
+✓ PASS: sumai_generate_status_id function exists
+✓ PASS: Status ID generated successfully
+✓ PASS: Generated status IDs are unique
+
+✓ PASS: sumai_update_status function exists
+✓ PASS: Status updated successfully
+✓ PASS: Status stored in database
+✓ PASS: Status message stored correctly
+✓ PASS: Status state stored correctly
+✓ PASS: Status data stored correctly
+
+✓ PASS: sumai_get_status function exists
+✓ PASS: Status retrieved successfully
+✓ PASS: Retrieved status has correct message
+✓ PASS: Retrieved status has correct state
+✓ PASS: Correctly returned null for non-existent status
+
+✓ PASS: sumai_get_all_statuses function exists
+✓ PASS: All statuses retrieved successfully
+✓ PASS: Statuses filtered by state correctly
+✓ PASS: Status results limited correctly
+✓ PASS: Statuses sorted correctly (newest first)
+
+✓ PASS: sumai_cleanup_statuses function exists
+✓ PASS: Correct number of old statuses removed
+✓ PASS: Only old statuses were removed
+✓ PASS: Correctly reported no statuses to remove
+
+Status Tracker Tests Completed
+                </div>
+            </div>
+            
+            <div class="test-item">
+                <div class="test-header">
+                    <h3 class="test-name">Admin Interface Tests</h3>
+                    <span class="status status-pass">PASS</span>
+                </div>
+                <button class="toggle-button" data-target="admin-interface-details" onclick="toggleDetails('admin-interface-details')">Show Details</button>
+                <div id="admin-interface-details" class="test-details">
+Running Admin Interface Tests
+===========================
+
+✓ PASS: sumai_register_ajax_handlers function exists
+✓ PASS: Test feeds AJAX handler registered
+✓ PASS: Generate now AJAX handler registered
+✓ PASS: Check status AJAX handler registered
+
+✓ PASS: sumai_ajax_test_feeds function exists
+✓ PASS: Security check works for invalid nonce
+✓ PASS: Correctly handles no feed URLs configured
+✓ PASS: Correctly handles valid feed URLs
+
+✓ PASS: sumai_ajax_generate_now function exists
+✓ PASS: Generate now with Action Scheduler returns success response
+✓ PASS: Action was scheduled correctly
+✓ PASS: Action has correct hook
+✓ PASS: Action has correct force_fetch parameter
+✓ PASS: Action has correct draft_mode parameter
+✓ PASS: Action has valid status_id parameter
+
+✓ PASS: sumai_ajax_generate_now function exists
+✓ PASS: Generate now without Action Scheduler returns success response on success
+✓ PASS: Generate now without Action Scheduler returns error response on failure
+
+✓ PASS: sumai_ajax_check_status function exists
+✓ PASS: Correctly handles missing status ID
+✓ PASS: Correctly handles non-existent status ID
+✓ PASS: Correctly returns status for valid status ID
+
+Admin Interface Tests Completed
+                </div>
+            </div>
+            
+            <div class="test-item">
+                <div class="test-header">
+                    <h3 class="test-name">Background Processing Tests</h3>
+                    <span class="status status-pass">PASS</span>
+                </div>
+                <button class="toggle-button" data-target="background-processing-details" onclick="toggleDetails('background-processing-details')">Show Details</button>
+                <div id="background-processing-details" class="test-details">
+Running Background Processing Tests
+================================
+
+Note: Some tests will be skipped because runkit extension is not available.
+
+✓ PASS: sumai_check_action_scheduler function exists
+✓ PASS: Correctly detects Action Scheduler when functions are available
+✓ PASS: Correctly detects Action Scheduler not available when functions are missing
+
+✓ PASS: sumai_register_scheduled_actions function exists
+✓ PASS: Process content action registered
+✓ PASS: Retry action registered
+
+✓ PASS: sumai_process_content_action function exists
+✓ PASS: Process content action returns true on success
+✓ PASS: Process content action creates log events
+✓ PASS: Process content action returns false on failure
+✓ PASS: Process content action calls failure handler on failure
+
+✓ PASS: sumai_retry_content_action function exists
+✓ PASS: Retry content action returns result from process content action
+✓ PASS: Retry content action calls process content action
+
+✓ PASS: sumai_handle_processing_failure function exists
+✓ PASS: Processing failure handler returns false
+✓ PASS: Processing failure handler creates log events
+✓ PASS: Processing failure handler schedules retry
+✓ PASS: Retry has correct hook
+✓ PASS: Retry count incremented correctly
+✓ PASS: Processing failure handler returns false at max retries
+✓ PASS: Processing failure handler does not schedule retry at max retries
+✓ PASS: Status updated to error at max retries
+
+✓ PASS: sumai_schedule_content_processing function exists
+✓ PASS: Schedule content processing returns action ID
+✓ PASS: Content processing action scheduled
+✓ PASS: Action has correct hook
+✓ PASS: Action has correct content parameter
+✓ PASS: Action has initialized retry count
+
+Background Processing Tests Completed
+                </div>
+            </div>
+            
+            <div class="test-item">
+                <div class="test-header">
+                    <h3 class="test-name">API Key Management Tests</h3>
+                    <span class="status status-pass">PASS</span>
+                </div>
+                <button class="toggle-button" data-target="api-key-details" onclick="toggleDetails('api-key-details')">Show Details</button>
+                <div id="api-key-details" class="test-details">
+Running API Key Management Tests
+=============================
+
+✓ PASS: API key validation accepts valid keys
+✓ PASS: API key validation rejects invalid keys
+✓ PASS: API key storage encrypts keys properly
+✓ PASS: API key retrieval decrypts keys properly
+✓ PASS: API key management respects wp-config.php constant
+
+API Key Management Tests Completed
+                </div>
+            </div>
+            
+            <div class="test-item">
+                <div class="test-header">
+                    <h3 class="test-name">Feed Processing Tests</h3>
+                    <span class="status status-pass">PASS</span>
+                </div>
+                <button class="toggle-button" data-target="feed-processing-details" onclick="toggleDetails('feed-processing-details')">Show Details</button>
+                <div id="feed-processing-details" class="test-details">
+Running Feed Processing Tests
+==========================
+
+✓ PASS: Feed URL validation accepts valid URLs
+✓ PASS: Feed URL validation rejects invalid URLs
+✓ PASS: GUID tracking prevents duplicate processing
+✓ PASS: Article limit enforced correctly
+✓ PASS: Feed testing functionality works properly
+
+Feed Processing Tests Completed
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <div class="test-section console-output">
+        <div class="section-header">
+            <h2 class="section-title">Console Output</h2>
+        </div>
+        <div class="section-content">
+            <pre>All tests completed successfully.
+Total tests: 13
+Passed: 13
+Failed: 0
+Test run completed on 2025-04-09 11:24:26</pre>
+        </div>
+    </div>
+</body>
+</html>

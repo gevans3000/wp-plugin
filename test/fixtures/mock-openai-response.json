@@ -1,0 +1,21 @@
+{
+  "id": "chatcmpl-123456789",
+  "object": "chat.completion",
+  "created": 1712592234,
+  "model": "gpt-4o-mini",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "# Test Article Summary\n\nThis article discusses the implementation of a WordPress plugin that automatically fetches and summarizes content from RSS feeds using OpenAI's GPT models.\n\n## Key Points\n\n- The plugin supports multiple RSS feeds and tracks processed articles\n- It uses WordPress Action Scheduler for background processing\n- The implementation includes secure API key storage with encryption\n- The system limits processing to 3 unused articles per feed to optimize resources\n- The architecture decouples API calls from the main cron job for better performance\n\n## Technical Details\n\nThe plugin features a modular architecture with separate components for feed processing, content generation, and admin interface. It includes comprehensive error handling and logging capabilities.\n\n## Source\n[Example.com](https://example.com/article1)"
+      },
+      "finish_reason": "stop"
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 1024,
+    "completion_tokens": 256,
+    "total_tokens": 1280
+  }
+}

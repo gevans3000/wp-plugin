@@ -1,0 +1,90 @@
+/**
+ * Admin styles for the Sumai plugin.
+ * Minimal, efficient styling for progress indicators and UI enhancements.
+ */
+
+/* Progress Bar */
+.sumai-progress-container {
+  width: 100%;
+  background-color: #f0f0f0;
+  border-radius: 3px;
+  margin: 10px 0;
+  overflow: hidden;
+}
+
+.sumai-progress-bar {
+  height: 20px;
+  background-color: #0073aa;
+  width: 0%;
+  transition: width 0.3s ease;
+  position: relative;
+}
+
+.sumai-progress-text {
+  position: absolute;
+  width: 100%;
+  text-align: center;
+  color: #fff;
+  font-weight: 500;
+  text-shadow: 0 0 2px rgba(0,0,0,0.4);
+  line-height: 20px;
+}
+
+/* Status Indicators */
+.sumai-status {
+  padding: 10px;
+  border-left: 4px solid #ccc;
+  margin: 10px 0;
+  background: #f9f9f9;
+}
+
+.sumai-status.pending {
+  border-color: #ffba00;
+}
+
+.sumai-status.success {
+  border-color: #46b450;
+}
+
+.sumai-status.error {
+  border-color: #dc3232;
+}
+
+/* Spinner */
+.sumai-spinner {
+  display: inline-block;
+  width: 20px;
+  height: 20px;
+  margin-left: 10px;
+  vertical-align: middle;
+  background-image: url(../images/spinner.gif);
+  background-repeat: no-repeat;
+  background-size: 20px 20px;
+  visibility: hidden;
+}
+
+.sumai-spinner.is-active {
+  visibility: visible;
+}
+
+/* Mobile Enhancements */
+@media screen and (max-width: 782px) {
+  .sumai-card {
+    padding: 15px;
+    margin-bottom: 15px;
+  }
+  
+  .sumai-progress-bar {
+    height: 24px;
+  }
+  
+  .sumai-progress-text {
+    line-height: 24px;
+  }
+  
+  .sumai-button {
+    width: 100%;
+    text-align: center;
+    margin-bottom: 10px;
+  }
+}
