@@ -68,3 +68,11 @@ Updated: 2025-04-10T15:29:00-04:00
 - Verify paths/modules exist
 - Don't delete code unless instructed
 - NEVER LEAVE MODIFIED FILES IN ROOT DIRECTORY unless TASKS.md
+
+## 8. Human Testing
+- After each 3-commit cycle, a human must test the plugin via a zipped package in a WordPress environment
+- Development cannot continue until human provides test results and feedback
+- Human must install and test in WordPress environment
+- Human must provide feedback on functionality and performance
+- Next development cycle cannot start without test results
+- Debug logs at "C:\Users\lovel\Local Sites\biglife360\app\public\sumai-debug.log" must be checked
