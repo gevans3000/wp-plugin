@@ -2,7 +2,7 @@
 
 A WordPress plugin that automatically fetches articles from multiple RSS feeds, summarizes them using OpenAI's GPT models, and posts the summaries as WordPress articles.
 
-**Version: 1.0.3** | Last Updated: 2025-04-10T15:14:00-04:00
+**Version: 1.0.2** | Last Updated: 2025-04-10T11:58:24-04:00
 
 ## Features
 
