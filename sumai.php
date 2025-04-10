@@ -3,7 +3,7 @@
  * Plugin Name: Sumai
  * Plugin URI: https://github.com/gevans3000/wp-plugin
  * Description: Automatically generate AI summaries of articles from RSS feeds.
- * Version: 1.0.2
+ * Version: 1.0.3
  * Author: gevans3000
  * Text Domain: sumai
  *
@@ -100,6 +100,7 @@ function sumai_include_files() {
     if (is_admin()) {
         $admin_files = [
             'includes/admin/settings.php',     // Settings page
+            'includes/admin/prompt-manager.php', // Custom AI prompts management
             'includes/admin/error-reporting.php', // Error reporting interface
             'includes/admin/ajax.php',         // AJAX handlers
             'includes/admin/error-test.php',   // Error testing tools

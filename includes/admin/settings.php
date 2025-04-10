@@ -223,6 +223,7 @@ function sumai_render_settings_page() {
                 <a href="#tab-manual" class="nav-tab">Manual Generation</a>
                 <a href="#tab-test" class="nav-tab">Test Feeds</a>
                 <a href="#tab-processed" class="nav-tab">Processed Articles</a>
+                <a href="#tab-prompts" class="nav-tab">AI Prompts</a>
                 <a href="#tab-debug" class="nav-tab">Debug Info</a>
                 <a href="#tab-docs" class="nav-tab">Documentation</a>
                 <a href="#tab-cache" class="nav-tab">Cache</a>
@@ -462,6 +463,10 @@ function sumai_render_settings_page() {
                         </div>
                     </div>
                 </div>
+            </div>
+            
+            <div id="tab-prompts" class="tab-content" style="display: none;">
+                <?php sumai_render_prompt_management(); ?>
             </div>
             
             <div id="tab-debug" class="tab-content" style="display: none;">

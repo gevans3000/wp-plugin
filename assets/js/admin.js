@@ -260,17 +260,20 @@
     
     // Initialize API key field
     function initApiKeyField() {
-        $('#sumai-toggle-api-key').on('click', function() {
-            const apiKeyField = $('#sumai-api-key');
-            
-            if (apiKeyField.attr('type') === 'password') {
-                apiKeyField.attr('type', 'text');
-                $(this).text('Hide');
-            } else {
-                apiKeyField.attr('type', 'password');
-                $(this).text('Show');
-            }
+        const toggleButton = $('#sumai-toggle-api-key');
+        const apiKeyField = $('#sumai-api-key');
+        
+        toggleButton.on('click', function() {
+            const type = apiKeyField.attr('type') === 'password' ? 'text' : 'password';
+            apiKeyField.attr('type', type);
+            toggleButton.text(type === 'password' ? 'Show' : 'Hide');
         });
+    }
+    
+    // Initialize prompt templates
+    function initPromptTemplates() {
+        // Already handled in the prompt-manager.php file with inline JavaScript
+        // This function is a placeholder for future enhancements
     }
     
     // Load processed articles
@@ -411,6 +414,7 @@
         initTestFeeds();
         initManualGeneration();
         initApiKeyField();
+        initPromptTemplates();
         initClearProcessed();
         initSearch();
         
