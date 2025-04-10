@@ -2,7 +2,7 @@
  
 A WordPress plugin that automatically fetches articles from multiple RSS feeds, summarizes them using OpenAI's GPT models, and posts the summaries as WordPress articles.
 
-**Version: 1.0.3** | Last Updated: 2025-04-10T15:55:30-04:00
+**Version: 1.0.3** | Last Updated: 2025-04-10T16:16:35-04:00
 
 ## Development
 
@@ -47,6 +47,7 @@ When contributing to this project, please follow these guidelines:
 5. **Code Style**: Follow WordPress coding standards throughout
 6. **File Size**: Keep files under 500 lines; refactor if approaching this limit
 7. **Task Tracking**: Update TASKS.md when completing tasks or discovering new ones
+8. **Human Testing**: After each 3-commit cycle, the plugin must be tested by a human in a WordPress environment before development can continue
 
 ## Session Documentation Template
 
