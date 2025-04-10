@@ -1,5 +1,5 @@
-# Sumai - AI Summarizer for WordPress
-
+# Sumai - AI Summarizer for WordPress 1
+ 
 A WordPress plugin that automatically fetches articles from multiple RSS feeds, summarizes them using OpenAI's GPT models, and posts the summaries as WordPress articles.
 
 **Version: 1.0.3** | Last Updated: 2025-04-10T15:55:30-04:00
