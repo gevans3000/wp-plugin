@@ -188,6 +188,9 @@ function sumai_sanitize_settings($input): array {
         ? wp_kses_post(trim($input['post_signature'])) 
         : '';
     
+    // Error notifications (boolean checkbox)
+    $s['error_notifications'] = isset($input['error_notifications']) ? 'on' : 'off';
+    
     return $s;
 }
 
@@ -205,7 +208,8 @@ function sumai_render_settings_page() {
             'draft_mode' => 0,
             'schedule_time' => '03:00',
             'post_signature' => '',
-            'retention_period' => 30
+            'retention_period' => 30,
+            'error_notifications' => 'on'
         ],
         $opts
     );
@@ -369,6 +373,25 @@ function sumai_render_settings_page() {
                                     placeholder="Optional signature to append to generated posts."
                                 ><?php echo esc_textarea($opts['post_signature']); ?></textarea>
                                 <p class="description">Optional text to append to the end of each generated post.</p>
+                            </td>
+                        </tr>
+                        
+                        <tr>
+                            <th scope="row">
+                                <label for="sumai-error-notifications">Error Notifications</label>
+                            </th>
+                            <td>
+                                <label>
+                                    <input 
+                                        type="checkbox" 
+                                        id="sumai-error-notifications" 
+                                        name="<?php echo esc_attr(SUMAI_SETTINGS_OPTION); ?>[error_notifications]" 
+                                        value="on"
+                                        <?php checked('on', $opts['error_notifications']); ?>
+                                    />
+                                    Send email notifications for errors
+                                </label>
+                                <p class="description">When enabled, you'll receive email notifications when errors occur during processing.</p>
                             </td>
                         </tr>
                     </table>

@@ -25,7 +25,8 @@ function sumai_activate() {
         'draft_mode' => 0,
         'schedule_time' => '03:00', 
         'post_signature' => '',
-        'retention_period' => 30
+        'retention_period' => 30,
+        'error_notifications' => 'on'
     ];
     
     // Add options to database

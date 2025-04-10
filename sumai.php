@@ -205,6 +205,10 @@ function sumai_php_error_handler($errno, $errstr, $errfile, $errline) {
     
     // Skip if error handler function doesn't exist yet
     if (!function_exists('sumai_handle_error')) {
+        // Fallback to basic logging if the full error handler isn't available yet
+        if (function_exists('sumai_log_event')) {
+            sumai_log_event("PHP Error: {$errstr} in {$errfile} on line {$errline}", true);
+        }
         return false;
     }
     
