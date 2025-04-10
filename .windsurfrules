@@ -1,7 +1,7 @@
 # Sumai AI Rules - 3-Commit Workflow
-Updated: 2025-04-10T13:02:41-04:00
+Updated: 2025-04-10T15:15:30-04:00
 
-## 1. Core Behavior
+## Core Behavior & Startup
 - Init: Load rules, TASKS.md, PLANNING.md, mcp_config.json
 - Goal: FULLY AUTONOMOUS 3-commit cycle without asking permission
 - State: After 3 commits, only TASKS.md should be modified (not committed)
@@ -9,7 +9,7 @@ Updated: 2025-04-10T13:02:41-04:00
 - ALL EDITS of EVERY FILE MUST USE THE LEAST AMOUNT OF COMPUTE AND CODE, keeping low token usage, BUT FULLY FUNCTIONING NEVER REMOVING FEATURES or FUNCTIONS, and IT HAS TO LOOK PRETTY AND GOOD UX
 - YOU NEVER DELETE GIT HISTORY
 
-## 2. Workflow
+## Automated 3-Commit Cycle Workflow
 ### Task ID
 - Use "Current Task" or first "Next Task"
 - If none, trigger Fail-Safe
