@@ -1,9 +1,14 @@
 # Sumai Plugin - Planning
 
+Last Updated: 2025-04-10T15:35:00-04:00
+
+## Project Overview
+Sumai is a WordPress plugin designed to automatically generate AI summaries of articles from RSS feeds. It uses OpenAI's GPT models to create concise, high-quality summaries that can be published as WordPress posts. The plugin focuses on efficiency, minimalism, and clarity while providing robust error handling and logging capabilities.
+
 ## Overview
 WP plugin for RSS feed summarization via OpenAI GPT. Features auto/manual generation with minimal code and compute usage.
 
-**Version: 1.0.2** | Updated: 2025-04-10T12:59:35-04:00
+**Version: 1.0.3** | Updated: 2025-04-10T15:35:00-04:00
 
 ## AI Assistant Guidelines
 Start here → TASKS.md → .windsurfrules for development
@@ -49,4 +54,9 @@ sumai/
 - Caching for settings, API responses, feed data
 - Optimized database queries
 - Batch processing for feeds
-- Transient and object cache integration
+
+## Debug & Logging
+- WordPress standard logging in uploads directory
+- External debug logs at "C:\Users\lovel\Local Sites\biglife360\app\public\sumai-debug.log"
+- Comprehensive error handling with admin notifications
+- Error suppression for non-critical issues
