@@ -67,4 +67,4 @@ Updated: 2025-04-10T15:29:00-04:00
 - No hallucinating libraries/functions
 - Verify paths/modules exist
 - Don't delete code unless instructed
-- NEVER LEAVE MODIFIED FILES
+- NEVER LEAVE MODIFIED FILES IN ROOT DIRECTORY unless TASKS.md
