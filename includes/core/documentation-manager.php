@@ -388,6 +388,9 @@ if (!function_exists('sumai_register_documentation_hooks')) {
         add_action('publish_post', 'sumai_update_all_documentation_timestamps');
         add_action('edit_post', 'sumai_update_all_documentation_timestamps');
     }
+    
+    // Register the hooks immediately
+    sumai_register_documentation_hooks();
 }
 
 if (!function_exists('sumai_update_documentation_on_settings_change')) {
