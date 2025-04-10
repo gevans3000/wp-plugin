@@ -93,28 +93,38 @@
             // Create progress bar
             const progressBar = createProgressBar(statusContainer, 0);
             
-            // Track if we've received the final response
-            let finalResponseReceived = false;
+            // Clear any previous test results
+            $.ajax({
+                url: sumaiAdmin.ajaxurl,
+                type: 'POST',
+                data: {
+                    action: 'sumai_test_feeds',
+                    nonce: sumaiAdmin.nonce,
+                    current_index: -1 // Special flag to clear results
+                },
+                error: function() {
+                    statusContainer.removeClass('pending').addClass('error');
+                    statusContainer.html('<p>An error occurred while initializing feed test.</p>');
+                    button.prop('disabled', false).text('Test');
+                }
+            });
             
             // Function to handle progress updates
             function handleProgress(response) {
-                if (finalResponseReceived) return;
-                
                 if (response.success) {
                     // Update progress
                     updateProgressBar(progressBar, response.data.progress || 0, response.data.message);
                     
                     if (response.data.status === 'complete') {
-                        finalResponseReceived = true;
                         displayFinalResults(response.data);
                     } else {
-                        // Continue processing
-                        sendTestRequest();
+                        // Continue processing with next index
+                        sendTestRequest(response.data.next_index);
                     }
                 } else {
                     // Handle error
                     statusContainer.removeClass('pending').addClass('error');
-                    statusContainer.html(`<p>Error: ${response.data.message}</p>`);
+                    statusContainer.html(`<p>Error: ${response.data ? response.data.message : 'Unknown error'}</p>`);
                     button.prop('disabled', false).text('Test');
                 }
             }
@@ -151,13 +161,14 @@
             }
             
             // Function to send the test request
-            function sendTestRequest() {
+            function sendTestRequest(currentIndex) {
                 $.ajax({
                     url: sumaiAdmin.ajaxurl,
                     type: 'POST',
                     data: {
                         action: 'sumai_test_feeds',
-                        nonce: sumaiAdmin.nonce
+                        nonce: sumaiAdmin.nonce,
+                        current_index: currentIndex || 0
                     },
                     success: handleProgress,
                     error: function() {
@@ -169,7 +180,7 @@
             }
             
             // Start the process
-            sendTestRequest();
+            sendTestRequest(0);
         });
     }
     

@@ -65,51 +65,95 @@ function sumai_ajax_test_feeds() {
     $total_feeds = count($feed_urls);
     $processed = 0;
     
-    foreach ( $feed_urls as $url ) {
-        // Send progress update
-        $progress = floor(($processed / $total_feeds) * 100);
-        $response = array(
-            'message' => sprintf('Testing feed %d of %d: %s', $processed + 1, $total_feeds, esc_url($url)),
-            'progress' => $progress,
-            'status' => 'processing'
-        );
+    // Check if we're continuing an existing test
+    $current_index = isset($_POST['current_index']) ? intval($_POST['current_index']) : 0;
+    
+    // Special case: clear previous results and initialize
+    if ($current_index < 0) {
+        delete_transient('sumai_feed_test_results');
+        wp_send_json_success(array(
+            'message' => 'Test initialized',
+            'progress' => 0,
+            'next_index' => 0
+        ));
+    }
+    
+    // If we've processed all feeds, send the final response
+    if ($current_index >= $total_feeds) {
+        // Get stored results
+        $stored_results = get_transient('sumai_feed_test_results');
+        if (!$stored_results) {
+            $stored_results = array();
+        }
         
-        // Use wp_send_json_success but don't exit so we can continue processing
-        wp_send_json_success($response);
+        wp_send_json_success(array(
+            'results' => $stored_results,
+            'progress' => 100,
+            'status' => 'complete',
+            'message' => 'Feed testing complete.'
+        ));
+    }
+    
+    // Get the current feed URL to test
+    $url = $feed_urls[$current_index];
+    
+    // Update progress
+    $progress = floor(($current_index / $total_feeds) * 100);
+    
+    // Log the test
+    if (function_exists('sumai_log_event')) {
+        sumai_log_event('Testing feed: ' . esc_url($url));
+    }
+    
+    // Test the feed
+    $result = array();
+    
+    try {
+        if (!function_exists('fetch_feed')) {
+            require_once(ABSPATH . WPINC . '/feed.php');
+        }
         
-        // Flush output buffer to send the response immediately
-        wp_ob_end_flush_all();
-        flush();
+        $feed = fetch_feed($url);
         
-        // Test the feed
-        $feed = fetch_feed( $url );
-        
-        if ( is_wp_error( $feed ) ) {
-            $results[] = array(
+        if (is_wp_error($feed)) {
+            $result = array(
                 'url' => $url,
                 'status' => 'error',
                 'message' => $feed->get_error_message()
             );
         } else {
             $item_count = $feed->get_item_quantity();
-            $results[] = array(
+            $result = array(
                 'url' => $url,
                 'status' => 'success',
-                'message' => sprintf( 'Found %d items', $item_count ),
+                'message' => sprintf('Found %d items', $item_count),
                 'items' => $item_count
             );
         }
-        
-        $processed++;
+    } catch (Exception $e) {
+        $result = array(
+            'url' => $url,
+            'status' => 'error',
+            'message' => 'Exception: ' . $e->getMessage()
+        );
     }
-
-    // Send final response
-    wp_send_json_success( array(
-        'results' => $results,
-        'progress' => 100,
-        'status' => 'complete',
-        'message' => 'Feed testing complete.'
-    ) );
+    
+    // Store result
+    $stored_results = get_transient('sumai_feed_test_results');
+    if (!$stored_results) {
+        $stored_results = array();
+    }
+    $stored_results[] = $result;
+    set_transient('sumai_feed_test_results', $stored_results, HOUR_IN_SECONDS);
+    
+    // Send response with next index
+    wp_send_json_success(array(
+        'current_index' => $current_index,
+        'next_index' => $current_index + 1,
+        'progress' => $progress,
+        'status' => 'processing',
+        'message' => sprintf('Testing feed %d of %d: %s', $current_index + 1, $total_feeds, esc_url($url))
+    ));
 }
 
 /**
