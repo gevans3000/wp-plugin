@@ -11,11 +11,13 @@ Updated: 2025-04-11T09:14:41-04:00
 **IMPORTANT:** All commands and file edits should be executed automatically without requiring manual confirmation when completing tasks. This ensures efficient workflow and minimizes interruptions during development.
 
 ## Current Tasks
-- [x] Fix Test Feeds functionality
-  - [x] Fix AJAX handler to test one feed at a time
-  - [x] Implement transient storage for feed test results
-  - [x] Update JavaScript to handle sequential feed testing
-  - [x] Add proper error handling and initialization
+- [ ] TASK-FIX-LIVE: Fix critical functions in live activated plugin
+  - [ ] Fix "Generate Now" functionality that's not working
+  - [ ] Debug AJAX handler `sumai_ajax_generate_now` to identify failure points
+  - [ ] Fix progress tracking in generation process
+  - [ ] Implement proper error handling for failed generation attempts
+  - [ ] Add detailed logging for generation steps
+  - [ ] Test fixes in live environment
 - [ ] [TASK-017] Feature Enhancements
   - [x] Custom AI prompts
     - [x] Add UI for custom prompt management
@@ -56,9 +58,37 @@ Updated: 2025-04-11T09:14:41-04:00
   - [ ] Optimize background processing
   - [ ] Optimize external API calls
 
-→ Next: Add model selection UI
+→ Next: Fix "Generate Now" functionality
 
 Waiting for user to confirm live test.
+
+## Testing Tasks
+- [ ] TASK-TEST: Comprehensive function testing
+  - [ ] Test core functions
+    - [ ] Test `sumai_include_files` for proper file loading sequence
+    - [ ] Test `sumai_init` for proper initialization
+    - [ ] Test `sumai_register_hooks` for correct hook registration
+    - [ ] Test `sumai_php_error_handler` for error handling
+  - [ ] Test API functions
+    - [ ] Test `sumai_summarize_text` with valid and invalid inputs
+    - [ ] Test `sumai_make_openai_request` with mocked responses
+    - [ ] Test `sumai_get_summary` with caching behavior
+  - [ ] Test feed processing functions
+    - [ ] Test `sumai_generate_content_hash` for consistency
+    - [ ] Test `sumai_fetch_new_articles_content` with sample feeds
+    - [ ] Test `sumai_get_processed_data` for correct data retrieval
+    - [ ] Test `sumai_mark_articles_as_processed` for proper storage
+    - [ ] Test `sumai_test_feeds` for feed validation
+  - [ ] Test AJAX handlers
+    - [ ] Test `sumai_ajax_test_feeds` with sample feed URLs
+    - [ ] Test `sumai_ajax_generate_now` for content generation
+    - [ ] Test `sumai_ajax_check_status` for status reporting
+    - [ ] Test `sumai_ajax_get_processed_articles` for pagination
+    - [ ] Test `sumai_ajax_clear_all_articles` for data cleanup
+  - [ ] Test logging and error handling
+    - [ ] Test `sumai_log_event` for proper logging
+    - [ ] Test `sumai_handle_error` for error classification
+    - [ ] Test `sumai_logging_fallback` for fallback behavior
 
 ## Completed Tasks
 - [x] TASK-FIX: Critical plugin fixes for WordPress compatibility
