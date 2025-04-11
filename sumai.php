@@ -1,11 +1,13 @@
 <?php
 /**
  * Plugin Name: Sumai
- * Plugin URI: https://github.com/gevans3000/wp-plugin
- * Description: Automatically generate AI summaries of articles from RSS feeds.
- * Version: 1.0.3
- * Author: gevans3000
+ * Plugin URI: https://sumai.ai
+ * Description: AI-powered content summarization from RSS feeds
+ * Author: Sumai AI Team
+ * Version: 1.0.4
+ * Author URI: https://sumai.ai
  * Text Domain: sumai
+ * Domain Path: /languages
  *
  * @package Sumai
  */

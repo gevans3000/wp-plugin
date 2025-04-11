@@ -8,7 +8,7 @@ Sumai is a WordPress plugin designed to automatically generate AI summaries of a
 ## Overview
 WP plugin for RSS feed summarization via OpenAI GPT. Features auto/manual generation with minimal code and compute usage.
 
-**Version: 1.0.3** | Updated: 2025-04-10T16:00:00-04:00
+**Version: 1.0.4** | Updated: 2025-04-11T10:09:28-04:00
 
 ## AI Assistant Guidelines
 Start here → TASKS.md → .windsurfrules for development
@@ -20,6 +20,7 @@ Start here → TASKS.md → .windsurfrules for development
 - Human must test each version via zipped plugin in WordPress
 - Development cannot continue until human provides test results
 - All commands and file edits execute automatically without requiring confirmation
+- Version number in sumai.php must be incremented before each commit (e.g., 1.0.3 → 1.0.4)
 
 ## Testing Requirements
 - After each feature implementation, create a zip package

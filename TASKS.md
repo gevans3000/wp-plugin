@@ -1,4 +1,4 @@
-# Sumai Tasks
+# Sumai AI Tasks
 
 > **Note:** At the end of each 3-commit cycle, this file will be updated but NOT committed to prepare for the next cycle always coding using least token usage but keeping ALL FUNCTIONS and WORKFLOW.
 
@@ -7,40 +7,37 @@ Updated: 2025-04-11T09:14:41-04:00
 ## Human Testing Requirement
 **IMPORTANT:** After each 3-commit cycle, a human must test the plugin via a zipped package in a WordPress environment. Development cannot continue until human provides test results and feedback. This ensures quality and proper functionality in real-world conditions.
 
+## Version Management
+**IMPORTANT:** The plugin version number in sumai.php must be incremented before each commit (e.g., 1.0.3 → 1.0.4) to ensure proper version tracking during testing.
+
 ## Automatic Execution
 **IMPORTANT:** All commands and file edits should be executed automatically without requiring manual confirmation when completing tasks. This ensures efficient workflow and minimizes interruptions during development.
 
 ## Current Tasks
-- [ ] TASK-FIX-LIVE: Fix critical functions in live activated plugin
-  - [ ] Fix "Generate Now" functionality that's not working
-  - [ ] Debug AJAX handler `sumai_ajax_generate_now` to identify failure points
-  - [ ] Fix progress tracking in generation process
-  - [ ] Implement proper error handling for failed generation attempts
-  - [ ] Add detailed logging for generation steps
+- [x] TASK-FIX-LIVE: Fix critical functions in live activated plugin
+  - [x] Fix "Generate Now" functionality that's not working
+  - [x] Debug AJAX handler `sumai_ajax_generate_now` to identify failure points
+  - [x] Fix progress tracking in generation process
+  - [x] Implement proper error handling for failed generation attempts
+  - [x] Add detailed logging for generation steps
   - [ ] Test fixes in live environment
-- [ ] [TASK-017] Feature Enhancements
-  - [x] Custom AI prompts
-    - [x] Add UI for custom prompt management
-    - [x] Implement prompt validation
-    - [x] Add prompt templates and examples
-    - [x] Create prompt testing functionality
-  - [ ] AI model selection
-    - [ ] Add model selection UI
-    - [ ] Implement model compatibility checks
-    - [ ] Add model-specific settings
-    - [ ] Create model performance comparison tools
-  - [ ] Configurable post output
-    - [ ] Add post type selection
-    - [ ] Implement post status options
-    - [ ] Add author selection
-    - [ ] Create taxonomy assignment options
-    - [ ] Implement custom fields support
-  - [ ] Image handling
-    - [ ] Add featured image extraction
-    - [ ] Implement image caching
-    - [ ] Create image attribution handling
-    - [ ] Add image optimization options
-    - [ ] Implement fallback image selection
+- [ ] TASK-017: AI model selection feature
+  - [ ] Add model selection UI
+  - [ ] Implement model switching logic
+  - [ ] Add model-specific prompts
+  - [ ] Test with different models
+  - [ ] Document model differences
+  - [ ] Refine error handling and messaging
+  - [ ] Improve accessibility
+- [ ] TASK-014: Performance Optimization
+  - [ ] Analyze and optimize database queries
+  - [ ] Optimize asset loading
+  - [ ] Optimize background processing
+  - [ ] Optimize external API calls
+
+→ Next: Test fixes in live environment
+
+Waiting for user to confirm live test.
 
 ## Next Tasks
 - [ ] TASK-016: Code Quality and Maintainability
@@ -52,15 +49,6 @@ Updated: 2025-04-11T09:14:41-04:00
   - [ ] Improve settings page usability and feed management
   - [ ] Refine error handling and messaging
   - [ ] Improve accessibility
-- [ ] TASK-014: Performance Optimization
-  - [ ] Analyze and optimize database queries
-  - [ ] Optimize asset loading
-  - [ ] Optimize background processing
-  - [ ] Optimize external API calls
-
-→ Next: Fix "Generate Now" functionality
-
-Waiting for user to confirm live test.
 
 ## Testing Tasks
 - [ ] TASK-TEST: Comprehensive function testing
