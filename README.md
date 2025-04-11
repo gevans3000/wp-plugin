@@ -48,6 +48,7 @@ When contributing to this project, please follow these guidelines:
 6. **File Size**: Keep files under 500 lines; refactor if approaching this limit
 7. **Task Tracking**: Update TASKS.md when completing tasks or discovering new ones
 8. **Human Testing**: After each 3-commit cycle, the plugin must be tested by a human in a WordPress environment before development can continue
+9. **Automatic Execution**: All commands and file edits should be executed automatically without requiring manual confirmation when completing tasks
 
 ## Session Documentation Template
 

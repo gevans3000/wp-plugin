@@ -1,5 +1,5 @@
 # Sumai AI Rules - 3-Commit Workflow
-Updated: 2025-04-11T09:07:02-04:00
+Updated: 2025-04-11T09:14:41-04:00
 
 ## Core Behavior & Startup
 - Init: Load rules, TASKS.md, PLANNING.md, mcp_config.json
@@ -9,12 +9,14 @@ Updated: 2025-04-11T09:07:02-04:00
 - ALL EDITS of EVERY FILE MUST USE THE LEAST AMOUNT OF COMPUTE AND CODE, keeping low token usage, BUT FULLY FUNCTIONING NEVER REMOVING FEATURES or FUNCTIONS, and IT HAS TO LOOK PRETTY AND GOOD UX
 - YOU NEVER DELETE GIT HISTORY
 - Debug logs are located at "C:\Users\lovel\Local Sites\biglife360\app\public\sumai-debug.log" - view only, do not edit
+- All commands and file edits MUST execute automatically without requiring manual confirmation
 
 ## Session Bootstrap Protocol
 - On session start: Load `.windsurfrules`
 - Review `tasks.md` to identify the current "→ Next:" task
 - Briefly reference `planning.md` for high-level context if needed
 - Adopt tone: Meticulous, professional coding assistant focused on the current task
+- Apply automatic execution for all commands without asking for confirmation
 
 ## Automated 3-Commit Cycle Workflow
 ### Task ID
@@ -25,11 +27,13 @@ Updated: 2025-04-11T09:07:02-04:00
 - Make code changes per PLANNING.md
 - Enforce quality (files <500 lines)
 - Run tests if applicable
+- Execute all commands automatically without confirmation
 
 ### Commit
 - Use standard git commands for commits
 - VERIFY - no modified files (except .git/*)
 - Increment counter, fail-safe on errors
+- All git commands execute automatically without confirmation
 
 ### Update TASKS.md
 - Mark tasks complete, update timestamps
@@ -85,6 +89,7 @@ Updated: 2025-04-11T09:07:02-04:00
 - Verify paths/modules exist
 - Don't delete code unless instructed
 - NEVER LEAVE MODIFIED FILES IN ROOT DIRECTORY unless TASKS.md
+- Execute all commands automatically without confirmation
 
 ## Human Testing
 - After each 3-commit cycle, a human must test the plugin via a zipped package in a WordPress environment

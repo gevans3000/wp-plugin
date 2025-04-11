@@ -19,6 +19,7 @@ Start here → TASKS.md → .windsurfrules for development
 - Code must be minimal, efficient, and maintainable
 - Human must test each version via zipped plugin in WordPress
 - Development cannot continue until human provides test results
+- All commands and file edits execute automatically without requiring confirmation
 
 ## Testing Requirements
 - After each feature implementation, create a zip package
