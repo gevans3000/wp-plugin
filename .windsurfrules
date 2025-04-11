@@ -1,5 +1,5 @@
 # Sumai AI Rules - 3-Commit Workflow
-Updated: 2025-04-10T15:29:00-04:00
+Updated: 2025-04-11T09:07:02-04:00
 
 ## Core Behavior & Startup
 - Init: Load rules, TASKS.md, PLANNING.md, mcp_config.json
@@ -9,6 +9,12 @@ Updated: 2025-04-10T15:29:00-04:00
 - ALL EDITS of EVERY FILE MUST USE THE LEAST AMOUNT OF COMPUTE AND CODE, keeping low token usage, BUT FULLY FUNCTIONING NEVER REMOVING FEATURES or FUNCTIONS, and IT HAS TO LOOK PRETTY AND GOOD UX
 - YOU NEVER DELETE GIT HISTORY
 - Debug logs are located at "C:\Users\lovel\Local Sites\biglife360\app\public\sumai-debug.log" - view only, do not edit
+
+## Session Bootstrap Protocol
+- On session start: Load `.windsurfrules`
+- Review `tasks.md` to identify the current "→ Next:" task
+- Briefly reference `planning.md` for high-level context if needed
+- Adopt tone: Meticulous, professional coding assistant focused on the current task
 
 ## Automated 3-Commit Cycle Workflow
 ### Task ID
@@ -40,28 +46,39 @@ Updated: 2025-04-10T15:29:00-04:00
 - Message: "3 commits done. Tasks: [IDs]. All committed except TASKS.md. Review?"
 - Wait for user response
 
-## 3. Quality
+## Post-Commit Workflow
+- After each successful Git commit:
+  1. Update `tasks.md`: Mark completed task(s), add emergent sub-tasks, update "→ Next:" pointer
+  2. Add line "Waiting for user to confirm live test." to `tasks.md`
+  3. Pause execution and output message indicating readiness for testing
+
+## Quality
 - Logical, atomic commits
 - Descriptive messages
 - Test after commits
 
-## 4. Fail-Safes
+## Fail-Safe Loop
+- Trigger: Activate if coding error prevents execution, task goal becomes unclear, or multiple attempts fail
+- Action: Pause execution, state the issue, reread `planning.md` and `tasks.md`, propose revised next step or ask for clarification
+- Do not proceed until user provides guidance
+
+## Fail-Safes
 - No task: "Paused: No task found"
 - Execution error: "Paused: Error executing TASK-ID: [error]"
 - Commit error: "Paused: Commit failed for TASK-ID: [error]"
 - TASKS.md error: "Paused: TASKS.md update error: [error]"
 
-## 5. Logging
+## Logging
 - Log: cycle start, steps, commits, errors, pauses
 - Persist between cycles
 - All logs are also written to "C:\Users\lovel\Local Sites\biglife360\app\public\sumai-debug.log"
 
-## 6. Environment
+## Environment
 - Detect local vs production paths
 - Update PLANNING.md as needed
 - Use MCP commands from config
 
-## 7. Behavior
+## Behavior
 - AUTONOMOUS until 3 commits complete
 - Make assumptions rather than asking
 - No hallucinating libraries/functions
@@ -69,10 +86,12 @@ Updated: 2025-04-10T15:29:00-04:00
 - Don't delete code unless instructed
 - NEVER LEAVE MODIFIED FILES IN ROOT DIRECTORY unless TASKS.md
 
-## 8. Human Testing
+## Human Testing
 - After each 3-commit cycle, a human must test the plugin via a zipped package in a WordPress environment
 - Development cannot continue until human provides test results and feedback
 - Human must install and test in WordPress environment
 - Human must provide feedback on functionality and performance
 - Next development cycle cannot start without test results
 - Debug logs at "C:\Users\lovel\Local Sites\biglife360\app\public\sumai-debug.log" must be checked
+- If testing fails, await specific instructions on how to address feedback
+- If message is "Test passed, proceed", continue with next task in `tasks.md`

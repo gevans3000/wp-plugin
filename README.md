@@ -51,6 +51,22 @@ When contributing to this project, please follow these guidelines:
 
 ## Session Documentation Template
 
+### Session Log Template (`Session.md`)
+
+Use this template to manually create session logs documenting progress and decisions.
+
+```markdown
+# Session Log - [Date]
+## Decisions Made
+- [List key decisions]
+## Tasks Completed
+- [List task IDs/descriptions completed in this session]
+## Issues Encountered
+- [List any problems or blockers]
+## Next Steps
+- [List planned next steps for the following session]
+```
+
 ### Session Start: [TIMESTAMP]
 
 #### Context Summary
