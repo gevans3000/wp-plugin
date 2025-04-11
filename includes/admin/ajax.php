@@ -188,159 +188,171 @@ function sumai_ajax_generate_now() {
         'message' => 'Starting content generation...'
     );
 
-    // Function to update progress
-    $update_progress = function($step, $message, $status = 'processing') use (&$progress_data) {
-        $progress_data['current_step'] = $step;
-        $progress_data['message'] = $message;
-        $progress_data['status'] = $status;
-        $progress_data['progress'] = floor(($step / $progress_data['total_steps']) * 100);
-        
-        // Send progress update
-        wp_send_json_success($progress_data);
-        
-        // Flush output buffer to send the response immediately
-        wp_ob_end_flush_all();
-        flush();
-    };
-
     // Step 1: Fetch feeds
-    $update_progress(1, 'Fetching RSS feeds...');
+    $progress_data['current_step'] = 1;
+    $progress_data['message'] = 'Fetching RSS feeds...';
+    $progress_data['progress'] = floor(($progress_data['current_step'] / $progress_data['total_steps']) * 100);
+    wp_send_json_success($progress_data);
     
     // Get settings
-    $opts = sumai_get_cached_settings();
-    $feed_urls = explode( "\n", $opts['feed_urls'] );
-    $feed_urls = array_map( 'trim', $feed_urls );
-    $feed_urls = array_filter( $feed_urls );
+    $opts = get_option('sumai_settings', array());
+    $feed_urls = isset($opts['feed_urls']) ? explode("\n", $opts['feed_urls']) : array();
+    $feed_urls = array_map('trim', $feed_urls);
+    $feed_urls = array_filter($feed_urls);
 
-    if ( empty( $feed_urls ) ) {
-        wp_send_json_error( array(
+    if (empty($feed_urls)) {
+        wp_send_json_error(array(
             'message' => 'No feed URLs configured. Please add feed URLs in the settings.',
             'progress' => 100
-        ) );
+        ));
     }
 
     // Step 2: Process feeds
-    $update_progress(2, 'Processing feed content...');
+    $progress_data['current_step'] = 2;
+    $progress_data['message'] = 'Processing feed content...';
+    $progress_data['progress'] = floor(($progress_data['current_step'] / $progress_data['total_steps']) * 100);
+    wp_send_json_success($progress_data);
+    
+    // Load required files
+    if (!function_exists('fetch_feed')) {
+        require_once(ABSPATH . WPINC . '/feed.php');
+    }
     
     $articles = array();
-    $processed_articles = sumai_get_processed_articles();
+    $processed_guids = sumai_get_processed_guids();
     
-    foreach ( $feed_urls as $url ) {
-        $feed = fetch_feed( $url );
-        
-        if ( is_wp_error( $feed ) ) {
-            continue;
-        }
-        
-        $items = $feed->get_items();
-        
-        foreach ( $items as $item ) {
-            $guid = $item->get_id();
+    foreach ($feed_urls as $url) {
+        try {
+            $feed = fetch_feed($url);
             
-            // Skip if already processed and respect_processed is true
-            if ( $respect_processed && isset( $processed_articles[ $guid ] ) ) {
+            if (is_wp_error($feed)) {
+                sumai_log_event('Error fetching feed: ' . $feed->get_error_message());
                 continue;
             }
             
-            $content = $item->get_content();
-            $title = $item->get_title();
-            $link = $item->get_permalink();
-            $date = $item->get_date( 'U' );
+            $items = $feed->get_items(0, 10); // Limit to 10 items per feed
             
-            $articles[] = array(
-                'guid' => $guid,
-                'title' => $title,
-                'content' => $content,
-                'link' => $link,
-                'date' => $date
-            );
+            foreach ($items as $item) {
+                $guid = $item->get_id();
+                
+                // Skip if already processed and respect_processed is true
+                if ($respect_processed && isset($processed_guids[$guid])) {
+                    continue;
+                }
+                
+                $content = $item->get_content();
+                $title = $item->get_title();
+                $link = $item->get_permalink();
+                $date = $item->get_date('U');
+                
+                $articles[] = array(
+                    'guid' => $guid,
+                    'title' => $title,
+                    'content' => $content,
+                    'link' => $link,
+                    'date' => $date,
+                    'content_hash' => sumai_generate_content_hash($content)
+                );
+            }
+        } catch (Exception $e) {
+            sumai_log_event('Exception processing feed: ' . $e->getMessage(), true);
         }
     }
 
-    // Step 3: Prepare for AI processing
-    $update_progress(3, 'Preparing content for AI processing...');
-    
-    if ( empty( $articles ) ) {
-        wp_send_json_error( array(
+    if (empty($articles)) {
+        wp_send_json_error(array(
             'message' => 'No new articles found to process.',
             'progress' => 100
-        ) );
+        ));
     }
     
     // Sort articles by date (newest first)
-    usort( $articles, function( $a, $b ) {
+    usort($articles, function($a, $b) {
         return $b['date'] - $a['date'];
-    } );
+    });
+    
+    // Step 3: Prepare for AI processing
+    $progress_data['current_step'] = 3;
+    $progress_data['message'] = 'Preparing content for AI processing...';
+    $progress_data['progress'] = floor(($progress_data['current_step'] / $progress_data['total_steps']) * 100);
+    wp_send_json_success($progress_data);
     
     // Prepare content for AI
-    $context_prompt = $opts['context_prompt'];
-    $title_prompt = $opts['title_prompt'];
+    $context_prompt = isset($opts['context_prompt']) ? $opts['context_prompt'] : '';
+    $title_prompt = isset($opts['title_prompt']) ? $opts['title_prompt'] : '';
     
     // Step 4: Generate content with AI
-    $update_progress(4, 'Generating content with AI...');
+    $progress_data['current_step'] = 4;
+    $progress_data['message'] = 'Generating content with AI...';
+    $progress_data['progress'] = floor(($progress_data['current_step'] / $progress_data['total_steps']) * 100);
+    wp_send_json_success($progress_data);
     
-    // Generate content
-    $generated_content = sumai_generate_content( $articles, $context_prompt );
-    
-    if ( is_wp_error( $generated_content ) ) {
-        wp_send_json_error( array(
-            'message' => 'Error generating content: ' . $generated_content->get_error_message(),
-            'progress' => 100
-        ) );
-    }
-    
-    // Generate title
-    $generated_title = sumai_generate_title( $generated_content, $title_prompt );
-    
-    if ( is_wp_error( $generated_title ) ) {
-        $generated_title = 'AI-Generated Summary: ' . current_time( 'F j, Y' );
-    }
-    
-    // Step 5: Create post
-    $update_progress(5, 'Creating post...');
-    
-    // Add signature if configured
-    if ( ! empty( $opts['post_signature'] ) ) {
-        $generated_content .= "\n\n" . $opts['post_signature'];
-    }
-    
-    // Create post
-    $post_id = wp_insert_post( array(
-        'post_title' => $generated_title,
-        'post_content' => $generated_content,
-        'post_status' => $draft_mode ? 'draft' : 'publish',
-        'post_author' => get_current_user_id(),
-        'post_type' => 'post'
-    ) );
-    
-    if ( is_wp_error( $post_id ) ) {
-        wp_send_json_error( array(
-            'message' => 'Error creating post: ' . $post_id->get_error_message(),
-            'progress' => 100
-        ) );
-    }
-    
-    // Mark articles as processed
-    foreach ( $articles as $article ) {
-        $processed_articles[ $article['guid'] ] = array(
-            'date' => current_time( 'timestamp' ),
+    try {
+        // Generate content
+        $generated_content = sumai_generate_content($articles, $context_prompt);
+        
+        if (is_wp_error($generated_content)) {
+            wp_send_json_error(array(
+                'message' => 'Error generating content: ' . $generated_content->get_error_message(),
+                'progress' => 100
+            ));
+        }
+        
+        // Generate title
+        $generated_title = sumai_generate_title($generated_content, $title_prompt);
+        
+        if (is_wp_error($generated_title)) {
+            $generated_title = 'AI-Generated Summary: ' . current_time('F j, Y');
+        }
+        
+        // Step 5: Create post
+        $progress_data['current_step'] = 5;
+        $progress_data['message'] = 'Creating post...';
+        $progress_data['progress'] = floor(($progress_data['current_step'] / $progress_data['total_steps']) * 100);
+        wp_send_json_success($progress_data);
+        
+        // Add signature if configured
+        if (!empty($opts['post_signature'])) {
+            $generated_content .= "\n\n" . $opts['post_signature'];
+        }
+        
+        // Create post
+        $post_id = wp_insert_post(array(
+            'post_title' => $generated_title,
+            'post_content' => $generated_content,
+            'post_status' => $draft_mode ? 'draft' : 'publish',
+            'post_author' => get_current_user_id(),
+            'post_type' => 'post'
+        ));
+        
+        if (is_wp_error($post_id)) {
+            wp_send_json_error(array(
+                'message' => 'Error creating post: ' . $post_id->get_error_message(),
+                'progress' => 100
+            ));
+        }
+        
+        // Mark articles as processed
+        sumai_mark_articles_as_processed($articles);
+        
+        // Send success response
+        wp_send_json_success(array(
+            'message' => sprintf(
+                'Successfully generated post: <a href="%s">%s</a>',
+                get_edit_post_link($post_id),
+                esc_html($generated_title)
+            ),
+            'progress' => 100,
+            'status' => 'complete',
             'post_id' => $post_id
-        );
+        ));
+    } catch (Exception $e) {
+        sumai_log_event('Exception during content generation: ' . $e->getMessage(), true);
+        wp_send_json_error(array(
+            'message' => 'Error: ' . $e->getMessage(),
+            'progress' => 100
+        ));
     }
-    
-    update_option( 'sumai_processed_articles', $processed_articles );
-    
-    // Send final response
-    wp_send_json_success( array(
-        'message' => sprintf( 
-            'Content generated successfully. <a href="%s">View Post</a> | <a href="%s">Edit Post</a>',
-            get_permalink( $post_id ),
-            get_edit_post_link( $post_id )
-        ),
-        'progress' => 100,
-        'status' => 'complete',
-        'post_id' => $post_id
-    ) );
 }
 
 /**

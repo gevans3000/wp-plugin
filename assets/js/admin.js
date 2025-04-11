@@ -205,6 +205,7 @@
             
             const statusContainer = $('#generation-status');
             statusContainer.html('<p>Starting generation process...</p>');
+            statusContainer.removeClass('error success').addClass('pending');
             
             // Create progress bar
             const progressBar = createProgressBar(statusContainer, 0);
@@ -212,29 +213,32 @@
             // Disable button
             button.prop('disabled', true).text('Generating...');
             
-            // Track if we've received the final response
-            let finalResponseReceived = false;
+            // Track current step
+            let currentStep = 0;
             
             // Function to handle progress updates
             function handleProgress(response) {
-                if (finalResponseReceived) return;
-                
                 if (response.success) {
                     // Update progress
-                    updateProgressBar(progressBar, response.data.progress || 0, response.data.message);
+                    const progress = response.data.progress || 0;
+                    const message = response.data.message || '';
+                    
+                    updateProgressBar(progressBar, progress, message);
                     
                     if (response.data.status === 'complete') {
-                        finalResponseReceived = true;
-                        
                         // Update status
                         statusContainer.removeClass('pending').addClass('success');
                         statusContainer.html(`<p>${response.data.message}</p>`);
                         
                         // Re-enable button
                         button.prop('disabled', false).text('Generate Now');
+                    } else if (response.data.current_step > currentStep) {
+                        // Continue processing with next step
+                        currentStep = response.data.current_step;
+                        setTimeout(sendGenerateRequest, 1000); // Wait 1 second before next request
                     } else {
                         // Continue processing
-                        sendGenerateRequest();
+                        setTimeout(sendGenerateRequest, 1000); // Wait 1 second before next request
                     }
                 } else {
                     // Handle error
@@ -256,11 +260,13 @@
                         respect_processed: respectProcessed
                     },
                     success: handleProgress,
-                    error: function() {
+                    error: function(xhr, status, error) {
+                        console.error('AJAX error:', status, error);
                         statusContainer.removeClass('pending').addClass('error');
-                        statusContainer.html('<p>An error occurred during content generation.</p>');
+                        statusContainer.html('<p>An error occurred during content generation. Check the browser console for details.</p>');
                         button.prop('disabled', false).text('Generate Now');
-                    }
+                    },
+                    timeout: 30000 // 30 second timeout
                 });
             }
             

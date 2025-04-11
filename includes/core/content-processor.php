@@ -682,3 +682,72 @@ function sumai_fetch_and_schedule_processing(bool $force_fetch = false, bool $dr
     
     return false;
 }
+
+/**
+ * Generates content using the OpenAI API.
+ * 
+ * @param array $articles Array of articles to summarize
+ * @param string $context_prompt Context prompt for OpenAI
+ * @return string|WP_Error Generated content or error
+ */
+function sumai_generate_content(array $articles, string $context_prompt): string {
+    // Get API key
+    $api_key = sumai_get_api_key();
+    
+    if (empty($api_key)) {
+        return new WP_Error('no_api_key', 'OpenAI API key not configured.');
+    }
+    
+    // Prepare content for summarization
+    $content = '';
+    foreach ($articles as $article) {
+        $content .= "Title: " . $article['title'] . "\n";
+        $content .= "Content: " . wp_strip_all_tags($article['content']) . "\n\n";
+    }
+    
+    // Truncate content if too long
+    if (mb_strlen($content) > SUMAI_MAX_INPUT_CHARS) {
+        $content = mb_substr($content, 0, SUMAI_MAX_INPUT_CHARS);
+        sumai_log_event('Content truncated to ' . SUMAI_MAX_INPUT_CHARS . ' characters');
+    }
+    
+    // Get summary from OpenAI
+    $summary = sumai_summarize_text($content, $context_prompt, '', $api_key);
+    
+    if (is_null($summary)) {
+        return new WP_Error('api_error', 'Failed to generate summary from OpenAI API.');
+    }
+    
+    return $summary['content'];
+}
+
+/**
+ * Generates a title using the OpenAI API.
+ * 
+ * @param string $content The content to generate a title for
+ * @param string $title_prompt The title prompt for OpenAI
+ * @return string|WP_Error Generated title or error
+ */
+function sumai_generate_title(string $content, string $title_prompt): string {
+    // Get API key
+    $api_key = sumai_get_api_key();
+    
+    if (empty($api_key)) {
+        return new WP_Error('no_api_key', 'OpenAI API key not configured.');
+    }
+    
+    // Truncate content if too long
+    if (mb_strlen($content) > SUMAI_MAX_INPUT_CHARS) {
+        $content = mb_substr($content, 0, SUMAI_MAX_INPUT_CHARS);
+    }
+    
+    // Get title from OpenAI
+    $title_content = "Generate a title for this content:\n\n" . $content;
+    $title_result = sumai_summarize_text($title_content, '', $title_prompt, $api_key);
+    
+    if (is_null($title_result)) {
+        return new WP_Error('api_error', 'Failed to generate title from OpenAI API.');
+    }
+    
+    return $title_result['title'];
+}
